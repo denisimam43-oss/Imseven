@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Seven Interior Finance</title>
+    <meta name="description" content="Financial dashboard for Seven Interior to monitor income, expenses, and automated real-time account firewall allocations." />
+    <meta property="og:title" content="Seven Interior Finance" />
+    <meta property="og:description" content="Financial dashboard for Seven Interior to monitor income, expenses, and automated real-time account firewall allocations." />
+    <script>
+      // Workaround for third-party libraries attempting to set window.fetch
+      if (typeof window !== 'undefined' && window.fetch) {
+        try {
+          const originalFetch = window.fetch;
+          Object.defineProperty(window, 'fetch', {
+            get() { return originalFetch; },
+            set(value) { console.warn("Ignored attempt to set window.fetch"); },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {
+          console.warn("Could not redefine window.fetch", e);
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

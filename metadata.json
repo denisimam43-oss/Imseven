@@ -1,0 +1,6 @@
+{
+  "name": "Seven Interior Finance",
+  "description": "Financial dashboard for Seven Interior to monitor income, expenses, and automated real-time account firewall allocations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
