@@ -12,15 +12,22 @@ import {
   RekeningType,
   FilterPeriod,
   ProjectSupport,
-  TargetScenario,
   IncomeType,
+  FinanceSettings,
+  DEFAULT_SETTINGS,
 } from "../types";
 import { generateId } from "../utils";
 import {
+  analyzeProject,
   buildAllocationTransfers,
+  computeAllocation,
   computeBalances,
-  computeSopAllocation,
+  computeMarketTarget,
+  DebtSummary,
   inflowTo,
+  MarketTarget,
+  projectFund,
+  summarizeDebt,
   isRealIncome,
   migrateTransactions,
   needsMigration,
@@ -33,6 +40,7 @@ const KEY_TRANSACTIONS = "seven_interior_transactions_v3";
 const KEY_SUPPORTS = "seven_interior_supports_v1";
 const KEY_RECONCILE = "seven_interior_needs_reconcile";
 const KEY_BACKUP_V1 = "seven_interior_backup_pre_v2";
+const KEY_SETTINGS = "seven_interior_settings_v1";
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -53,6 +61,15 @@ export interface PaymentInput {
   settleSupports?: boolean; // kembalikan talangan proyek ini sekaligus
 }
 
+export interface DebtProjectInput {
+  estMaterial: number;
+  estLabour: number;
+  spentMaterial: number; // bahan yang sudah dibeli untuk proyek ini
+  spentLabour: number; // labour yang sudah dibayar
+  remainingFund: number; // dana proyek yang benar-benar masih ada (biasanya 0)
+  expectedSettlementAt?: number;
+}
+
 export interface BackupData {
   app: "seven-interior-finance";
   version: 2;
@@ -60,6 +77,7 @@ export interface BackupData {
   projects: Project[];
   transactions: Transaction[];
   supports: ProjectSupport[];
+  settings?: FinanceSettings;
 }
 
 interface FinanceState {
@@ -71,15 +89,25 @@ interface FinanceState {
   filterPeriod: FilterPeriod;
   setFilterPeriod: (period: FilterPeriod) => void;
   isInPeriod: (ts: number) => boolean;
-  targetScenario: TargetScenario;
-  setTargetScenario: (scenario: TargetScenario) => void;
+  settings: FinanceSettings;
+  updateSettings: (data: Partial<FinanceSettings>) => void;
+  debt: DebtSummary;
+  marketTarget: MarketTarget;
   addProject: (
     name: string,
     totalValue: number,
     clientNotes?: string,
     firstPayment?: Omit<PaymentInput, "projectId">,
+    debtInput?: DebtProjectInput,
   ) => void;
-  updateProject: (id: string, data: Partial<Pick<Project, "name" | "totalValue" | "clientNotes">>) => void;
+  updateProject: (
+    id: string,
+    data: Partial<
+      Pick<Project, "name" | "totalValue" | "clientNotes" | "estMaterial" | "estLabour" | "expectedSettlementAt">
+    >,
+  ) => void;
+  setDebtStatus: (projectId: string, isDebt: boolean, remainingFund?: number) => void;
+  fundFromRecovery: (projectId: string, amount: number) => void;
   receivePayment: (input: PaymentInput) => void;
   completeProject: (projectId: string, date: number) => void;
   reopenProject: (projectId: string) => void;
@@ -99,6 +127,7 @@ interface FinanceState {
     amount: number,
     description: string,
     date?: number,
+    projectId?: string,
   ) => void;
   addSupport: (
     fromProjectId: string | undefined,
@@ -109,6 +138,7 @@ interface FinanceState {
     description: string,
     account?: RekeningType,
     date?: number,
+    toAccount?: RekeningType,
   ) => void;
   settleSupport: (supportId: string, date?: number) => void;
   deleteSupport: (supportId: string) => void;
@@ -167,7 +197,18 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   const [supports, setSupports] = useState<ProjectSupport[]>(() => readJson(KEY_SUPPORTS, []));
 
   const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>("THIS_MONTH");
-  const [targetScenario, setTargetScenario] = useState<TargetScenario>("SKENARIO_B");
+  const [settings, setSettings] = useState<FinanceSettings>(() => {
+    const saved = readJson<Partial<FinanceSettings>>(KEY_SETTINGS, {});
+    return {
+      ...DEFAULT_SETTINGS,
+      ...saved,
+      shares: { ...DEFAULT_SETTINGS.shares, ...(saved.shares || {}) },
+    };
+  });
+
+  const updateSettings: FinanceState["updateSettings"] = (data) => {
+    setSettings((prev) => ({ ...prev, ...data, shares: { ...prev.shares, ...(data.shares || {}) } }));
+  };
 
   useEffect(() => {
     // Status ini bisa diset saat migrasi di inisialisasi state transaksi
@@ -183,6 +224,9 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localStorage.setItem(KEY_SUPPORTS, JSON.stringify(supports));
   }, [supports]);
+  useEffect(() => {
+    localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings));
+  }, [settings]);
 
   const dismissReconcile = () => {
     localStorage.removeItem(KEY_RECONCILE);
@@ -210,27 +254,84 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       account: "REK1",
     };
     if (!input.allocate) return [income];
-    const alreadyReceived = existing
-      .filter((t) => t.projectId === project.id && isRealIncome(t))
-      .reduce((s, t) => s + t.amount, 0);
-    const split = computeSopAllocation(project.totalValue, alreadyReceived, input.amount);
+    // Utang project: pelunasan mengisi kebutuhan proyeknya dulu (waterfall)
+    const debtNeed = project.isDebtProject
+      ? analyzeProject(project, existing, supports, settings.shares).need
+      : undefined;
+    const split = computeAllocation(input.amount, settings.shares, debtNeed);
     return [income, ...buildAllocationTransfers(income, split, project.name)];
   };
 
-  const addProject: FinanceState["addProject"] = (name, totalValue, clientNotes, firstPayment) => {
+  const addProject: FinanceState["addProject"] = (name, totalValue, clientNotes, firstPayment, debtInput) => {
+    const createdAt = firstPayment?.date ?? Date.now();
     const newProject: Project = {
       id: generateId(),
       name,
       type: "PROJECT",
       status: "ONGOING",
       totalValue,
-      createdAt: firstPayment?.date ?? Date.now(),
+      createdAt,
       clientNotes,
     };
-    setProjects((prev) => [newProject, ...prev]);
-    if (firstPayment && firstPayment.amount > 0) {
-      setTransactions((prev) => [...buildPayment(newProject, firstPayment, prev), ...prev]);
+    if (debtInput) {
+      // Utang project: DP sudah terpakai, jadi DP dicatat tanpa alokasi dan
+      // dana HPP proyek dikoreksi menjadi sebesar dana yang benar-benar masih ada.
+      newProject.isDebtProject = true;
+      newProject.estMaterial = debtInput.estMaterial;
+      newProject.estLabour = debtInput.estLabour;
+      newProject.expectedSettlementAt = debtInput.expectedSettlementAt;
+      newProject.fundAdjustment =
+        debtInput.spentMaterial + debtInput.spentLabour + debtInput.remainingFund;
     }
+    setProjects((prev) => [newProject, ...prev]);
+
+    const opening: Transaction[] = [];
+    if (debtInput) {
+      const mk = (amount: number, category: string, label: string): Transaction => ({
+        id: generateId(),
+        date: createdAt,
+        createdAt: Date.now(),
+        description: `${label} (sudah keluar) - ${name}`,
+        type: "EXPENSE",
+        amount,
+        expenseAccount: "REK1",
+        expenseCategory: category,
+        projectId: newProject.id,
+      });
+      if (debtInput.spentMaterial > 0)
+        opening.push(mk(debtInput.spentMaterial, "HPP - Biaya Bahan Baku", "Bahan"));
+      if (debtInput.spentLabour > 0)
+        opening.push(mk(debtInput.spentLabour, "HPP - Upah Labour (Termasuk Instalasi)", "Labour"));
+    }
+    setTransactions((prev) => {
+      const pay =
+        firstPayment && firstPayment.amount > 0
+          ? buildPayment(newProject, debtInput ? { ...firstPayment, allocate: false } : firstPayment, prev)
+          : [];
+      return [...pay, ...opening, ...prev];
+    });
+  };
+
+  const setDebtStatus: FinanceState["setDebtStatus"] = (projectId, isDebt, remainingFund = 0) => {
+    setProjects((prev) =>
+      prev.map((p) => {
+        if (p.id !== projectId) return p;
+        if (!isDebt) return { ...p, isDebtProject: false };
+        // Koreksi agar dana HPP proyek = dana yang benar-benar masih ada
+        const current = projectFund(p, transactions);
+        return {
+          ...p,
+          isDebtProject: true,
+          fundAdjustment: (p.fundAdjustment || 0) + (remainingFund - current),
+        };
+      }),
+    );
+  };
+
+  const fundFromRecovery: FinanceState["fundFromRecovery"] = (projectId, amount) => {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project || amount <= 0) return;
+    addTransfer("REK4", "REK2", amount, `Dana Pemulihan (Rek 4) untuk ${project.name}`, Date.now(), projectId);
   };
 
   const updateProject: FinanceState["updateProject"] = (id, data) => {
@@ -256,7 +357,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       description: `Pengembalian Talangan ke ${sup.fromProjectName} (${sup.description})`,
       type: "EXPENSE",
       amount: sup.amount,
-      expenseAccount: sup.account || "REK2",
+      expenseAccount: sup.toAccount || sup.account || "REK2",
       expenseCategory: "Pengembalian Talangan Proyek",
       projectId: sup.toProjectId,
       supportId: sup.id,
@@ -333,7 +434,14 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     ]);
   };
 
-  const addTransfer: FinanceState["addTransfer"] = (from, to, amount, description, date = Date.now()) => {
+  const addTransfer: FinanceState["addTransfer"] = (
+    from,
+    to,
+    amount,
+    description,
+    date = Date.now(),
+    projectId,
+  ) => {
     if (from === to) return;
     setTransactions((prev) => [
       {
@@ -345,6 +453,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         amount,
         fromAccount: from,
         toAccount: to,
+        projectId,
       },
       ...prev,
     ]);
@@ -361,8 +470,10 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     description,
     account = "REK2",
     date = Date.now(),
+    toAccount,
   ) => {
     const supportId = generateId();
+    const destAccount = toAccount || account;
     const newSupport: ProjectSupport = {
       id: supportId,
       fromProjectId,
@@ -374,9 +485,10 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       date,
       status: "OUTSTANDING",
       account,
+      toAccount: destAccount,
     };
-    // Talangan hanya memindah "jatah" antarproyek di rekening yang sama,
-    // sehingga saldo rekening tidak berubah (keluar & masuk di rekening yang sama).
+    // Talangan antarproyek di Rek 2 hanya memindah "jatah" (saldo rekening tetap);
+    // talangan dari Rek 3/Rek 4 benar-benar memindahkan uang ke Rek 2.
     const lenderExpense: Transaction = {
       id: generateId(),
       date,
@@ -397,7 +509,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       type: "INCOME",
       amount,
       projectId: toProjectId,
-      account,
+      account: destAccount,
       supportId,
     };
     setSupports((prev) => [newSupport, ...prev]);
@@ -477,6 +589,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     projects,
     transactions,
     supports,
+    settings,
   });
 
   const importData: FinanceState["importData"] = (data) => {
@@ -488,6 +601,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setProjects(d.projects);
     setTransactions(tx);
     setSupports(Array.isArray(d.supports) ? d.supports : []);
+    if (d.settings) updateSettings(d.settings);
     return {
       ok: true,
       message: `Berhasil memulihkan ${d.projects.length} proyek dan ${tx.length} transaksi.`,
@@ -549,6 +663,15 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     };
   }, [transactions, supports, activeProjects]);
 
+  const debt = useMemo(
+    () => summarizeDebt(projects, transactions, supports, settings.shares),
+    [projects, transactions, supports, settings.shares],
+  );
+  const marketTarget = useMemo(
+    () => computeMarketTarget(settings, debt.totalHole, projects),
+    [settings, debt.totalHole, projects],
+  );
+
   const filteredBalances = useMemo(
     () => ({
       totalOmset: filteredTransactions.filter(isRealIncome).reduce((s, t) => s + t.amount, 0),
@@ -568,8 +691,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         filterPeriod,
         setFilterPeriod,
         isInPeriod,
-        targetScenario,
-        setTargetScenario,
+        settings,
+        updateSettings,
+        debt,
+        marketTarget,
+        setDebtStatus,
+        fundFromRecovery,
         addProject,
         updateProject,
         receivePayment,

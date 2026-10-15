@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { useFinance } from "../store/FinanceContext";
 import { IncomeType, RekeningType, REKENING_LABEL } from "../types";
 import { formatRupiah, fromDateInput, toDateInput } from "../utils";
-import { computeSopAllocation, isRealIncome, outstandingSupportFor } from "../finance";
+import { analyzeProject, computeAllocation, isRealIncome, outstandingSupportFor } from "../finance";
 
 export type ModalType =
   | "NEW_PROJECT"
@@ -79,7 +79,11 @@ function ModalBody({
     activeProjects,
     transactions,
     supports,
+    settings,
+    debt,
+    balances,
   } = useFinance();
+  const shares = settings.shares;
 
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
@@ -98,9 +102,18 @@ function ModalBody({
   const [withDp, setWithDp] = useState(true);
   const [settleSupports, setSettleSupports] = useState(true);
 
-  // Talangan
-  const [fromProjectId, setFromProjectId] = useState("");
-  const [toProjectId, setToProjectId] = useState("");
+  // Utang project
+  const [isDebt, setIsDebt] = useState(false);
+  const [estMat, setEstMat] = useState("");
+  const [estLab, setEstLab] = useState("");
+  const [spentMat, setSpentMat] = useState("");
+  const [spentLab, setSpentLab] = useState("");
+  const [remainingFund, setRemainingFund] = useState("");
+  const [settleDate, setSettleDate] = useState("");
+
+  // Talangan: sumber "REK4" | "REK3" | id proyek
+  const [supportSource, setSupportSource] = useState<string>("REK4");
+  const [toProjectId, setToProjectId] = useState(initialProjectId || "");
 
   // Password
   const [password, setPassword] = useState("");
@@ -119,6 +132,30 @@ function ModalBody({
     [payProject, transactions],
   );
   const payProjectSupports = payProject ? outstandingSupportFor(supports, payProject.id) : [];
+  const payAnalysis = payProject?.isDebtProject
+    ? analyzeProject(payProject, transactions, supports, shares)
+    : undefined;
+
+  // Nilai default estimasi utang project dari porsi SOP
+  const defMat = Math.round((contractValue * shares.bahan) / 100);
+  const defLab = Math.round((contractValue * shares.labour) / 100);
+  const estMatNum = estMat === "" ? defMat : parseNum(estMat);
+  const estLabNum = estLab === "" ? defLab : parseNum(estLab);
+  const debtPreview = (() => {
+    if (!isDebt || !contractValue) return null;
+    const outstanding = Math.max(0, contractValue - payNum);
+    const remM = Math.max(0, estMatNum - parseNum(spentMat));
+    const remL = Math.max(0, estLabNum - parseNum(spentLab));
+    const need = Math.max(0, remM + remL - parseNum(remainingFund));
+    return { outstanding, need, hole: Math.max(0, need - outstanding), cover: outstanding - need };
+  })();
+
+  // Talangan
+  const supportTarget = activeProjects.find((p) => p.id === toProjectId);
+  const supportLender = activeProjects.find((p) => p.id === supportSource);
+  const targetAnalysis = supportTarget ? analyzeProject(supportTarget, transactions, supports, shares) : undefined;
+  const lenderAnalysis = supportLender ? analyzeProject(supportLender, transactions, supports, shares) : undefined;
+  const supportNum = parseNum(value);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -138,8 +175,18 @@ function ModalBody({
         name,
         contractValue,
         notes || undefined,
-        withDp && payNum > 0
-          ? { amount: payNum, date: ts, incomeType: "DP", allocate }
+        (withDp || isDebt) && payNum > 0
+          ? { amount: payNum, date: ts, incomeType: "DP", allocate: isDebt ? false : allocate }
+          : undefined,
+        isDebt
+          ? {
+              estMaterial: estMatNum,
+              estLabour: estLabNum,
+              spentMaterial: parseNum(spentMat),
+              spentLabour: parseNum(spentLab),
+              remainingFund: parseNum(remainingFund),
+              expectedSettlementAt: settleDate ? fromDateInput(settleDate) : undefined,
+            }
           : undefined,
       );
       return close();
@@ -165,25 +212,47 @@ function ModalBody({
 
     if (activeModal === "NEW_EXPENSE") {
       const finalCategory = category === "CUSTOM" ? customCategory || "Pengeluaran Lainnya" : category;
+      const takesProfit = finalCategory.includes("Prive") || finalCategory.startsWith("Profit");
+      if (
+        takesProfit &&
+        debt.totalHole > 0 &&
+        !window.confirm(
+          `Masih ada lubang utang project ${formatRupiah(debt.totalHole)}.\nStrategi pemulihan menyarankan menahan prive/pengambilan profit sampai lubang tertutup.\n\nTetap catat pengeluaran ini?`,
+        )
+      )
+        return;
       addExpense(account, num, name, finalCategory, selectedProjectId || undefined, ts);
     } else if (activeModal === "NEW_TRANSFER") {
       if (account === toAccount) return alert("Rekening asal dan tujuan tidak boleh sama.");
       addTransfer(account, toAccount, num, name, ts);
     } else if (activeModal === "NEW_SUPPORT") {
-      if (fromProjectId === toProjectId) return alert("Sumber dan penerima talangan tidak boleh sama.");
-      const fromProj = activeProjects.find((p) => p.id === fromProjectId);
-      const toProj = activeProjects.find((p) => p.id === toProjectId);
-      const fromName = fromProj ? fromProj.name : "Operasional Kantor (Kas Perusahaan)";
-      const toName = toProj ? toProj.name : "Operasional Kantor (Kas Perusahaan)";
+      if (supportSource === toProjectId) return alert("Sumber dan penerima talangan tidak boleh sama.");
+      if (
+        supportLender &&
+        targetAnalysis &&
+        num > targetAnalysis.safeTalangan &&
+        !window.confirm(
+          `Talangan ${formatRupiah(num)} melebihi batas aman ${formatRupiah(targetAnalysis.safeTalangan)}.\nBagian di atas batas ini tidak akan bisa dikembalikan dari pelunasan ${targetAnalysis.project.name}, sehingga proyek ${supportLender.name} ikut kekurangan dana (gali lubang tutup lubang).\n\nTetap lanjutkan?`,
+        )
+      )
+        return;
+      const fromName = supportLender
+        ? supportLender.name
+        : supportSource === "REK4"
+          ? "Dana Pemulihan (Rek 4 - Cadangan Profit)"
+          : "Kas Operasional (Rek 3)";
+      const fromAccount: RekeningType = supportLender ? "REK2" : (supportSource as RekeningType);
+      const toName = supportTarget ? supportTarget.name : "Operasional Kantor (Kas Perusahaan)";
       addSupport(
-        fromProjectId || undefined,
+        supportLender ? supportLender.id : undefined,
         fromName,
-        toProjectId || undefined,
+        supportTarget ? supportTarget.id : undefined,
         toName,
         num,
         name || "Talangan modal kerja proyek",
-        "REK2",
+        fromAccount,
         ts,
+        supportTarget ? "REK2" : "REK3",
       );
     }
     close();
@@ -260,12 +329,61 @@ function ModalBody({
                 <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} placeholder="Contoh: Finishing duco putih, estimasi 3 minggu" />
               </Field>
 
+              <label className="flex items-start gap-2 p-3 bg-rose-50 rounded-xl border border-rose-200 text-xs text-rose-900 cursor-pointer">
+                <input type="checkbox" className="mt-0.5" checked={isDebt} onChange={(e) => setIsDebt(e.target.checked)} />
+                <span>
+                  <b>Utang Project</b> — DP sudah diterima tapi sudah terpakai untuk keperluan lain, sehingga bahan &
+                  labour proyek ini masih harus didanai.
+                </span>
+              </label>
+
+              {isDebt && (
+                <>
+                  <Field label="DP yang Dulu Diterima (Rp)">
+                    <input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={`${inputCls} font-mono`} />
+                  </Field>
+                  {dateField}
+                  <div className="grid grid-cols-2 gap-3">
+                    <Field label="Bahan Sudah Dibeli (Rp)">
+                      <input type="number" value={spentMat} onChange={(e) => setSpentMat(e.target.value)} className={`${inputCls} font-mono`} placeholder="0" />
+                    </Field>
+                    <Field label="Labour Sudah Dibayar (Rp)">
+                      <input type="number" value={spentLab} onChange={(e) => setSpentLab(e.target.value)} className={`${inputCls} font-mono`} placeholder="0" />
+                    </Field>
+                    <Field label={`Estimasi Total Bahan (${shares.bahan}%)`}>
+                      <input type="number" value={estMat} onChange={(e) => setEstMat(e.target.value)} className={`${inputCls} font-mono`} placeholder={String(defMat)} />
+                    </Field>
+                    <Field label={`Estimasi Total Labour (${shares.labour}%)`}>
+                      <input type="number" value={estLab} onChange={(e) => setEstLab(e.target.value)} className={`${inputCls} font-mono`} placeholder={String(defLab)} />
+                    </Field>
+                    <Field label="Dana Proyek Masih Ada (Rp)" hint="Biasanya 0 karena DP sudah terpakai.">
+                      <input type="number" value={remainingFund} onChange={(e) => setRemainingFund(e.target.value)} className={`${inputCls} font-mono`} placeholder="0" />
+                    </Field>
+                    <Field label="Perkiraan Pelunasan">
+                      <input type="date" value={settleDate} onChange={(e) => setSettleDate(e.target.value)} className={inputCls} />
+                    </Field>
+                  </div>
+                  {debtPreview && (
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
+                      <div className="flex justify-between"><span className="text-slate-500">Sisa tagihan (pelunasan nanti)</span><span className="font-mono font-bold text-blue-600">{formatRupiah(debtPreview.outstanding)}</span></div>
+                      <div className="flex justify-between"><span className="text-slate-500">Kebutuhan bahan + labour tersisa</span><span className="font-mono font-bold text-rose-600">{formatRupiah(debtPreview.need)}</span></div>
+                      <div className={`flex justify-between pt-1 border-t border-slate-200 font-bold ${debtPreview.hole > 0 ? "text-rose-700" : "text-emerald-700"}`}>
+                        <span>{debtPreview.hole > 0 ? "Lubang (tidak tertutup pelunasan)" : "Pelunasan cukup menutup kebutuhan"}</span>
+                        <span className="font-mono">{formatRupiah(debtPreview.hole > 0 ? debtPreview.hole : debtPreview.cover)}</span>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {!isDebt && (
               <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
                 <input type="checkbox" checked={withDp} onChange={(e) => setWithDp(e.target.checked)} />
                 DP sudah diterima
               </label>
+              )}
 
-              {withDp && (
+              {!isDebt && withDp && (
                 <>
                   <Field label="Nominal DP yang Masuk (Rp)" hint="Otomatis 60% dari kontrak, ubah jika klien membayar berbeda.">
                     <input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={`${inputCls} font-mono`} />
@@ -281,7 +399,7 @@ function ModalBody({
                         <span>Alokasi DP ({((payNum / contractValue) * 100).toFixed(0)}% kontrak):</span>
                         <span className="font-mono">{formatRupiah(payNum)}</span>
                       </div>
-                      <AllocationPreview split={computeSopAllocation(contractValue, 0, payNum)} />
+                      <AllocationPreview split={computeAllocation(payNum, shares)} />
                     </div>
                   )}
                 </>
@@ -338,8 +456,15 @@ function ModalBody({
                 Langsung alokasikan dari Rek 1 ke Rek 2/3/4 sesuai SOP
               </label>
               {allocate && payProject && payNum > 0 && (
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs">
-                  <AllocationPreview split={computeSopAllocation(payProject.totalValue, alreadyReceived, payNum)} />
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1.5">
+                  {payAnalysis && (
+                    <p className="text-[11px] text-rose-800 leading-relaxed">
+                      <b>Utang project — waterfall:</b> Rek 2 diisi dulu {formatRupiah(payAnalysis.need)} (labour{" "}
+                      {formatRupiah(payAnalysis.remLabour)}, kembalikan talangan {formatRupiah(payAnalysis.talanganIn)}, sisa
+                      bahan), baru sisanya ke Rek 3 & Rek 4.
+                    </p>
+                  )}
+                  <AllocationPreview split={computeAllocation(payNum, shares, payAnalysis?.need)} />
                 </div>
               )}
               {payType === "PELUNASAN" && payProjectSupports.length > 0 && (
@@ -381,6 +506,9 @@ function ModalBody({
                   <optgroup label="Biaya Tetap Expense (Lock 20%)">
                     <option value="Opex Tetap - Biaya Marketing">Opex Tetap - Biaya Marketing & Iklan</option>
                     <option value="Opex Tetap - Biaya Expense/Tetap (Utang, Salary)">Opex Tetap - Biaya Expense/Tetap (Sewa Workshop, Salary Staff)</option>
+                  </optgroup>
+                  <optgroup label="Lock Profit (Rek 4)">
+                    <option value="Profit - Pengambilan / Dividen">Profit - Pengambilan / Dividen Owner</option>
                   </optgroup>
                   <optgroup label="Pemisahan Modal">
                     <option value="Tax Reserve / Pajak">Tax Reserve / Pajak</option>
@@ -443,32 +571,79 @@ function ModalBody({
 
           {activeModal === "NEW_SUPPORT" && (
             <>
-              <Field label="Sumber (Pemberi Talangan)">
-                <select value={fromProjectId} onChange={(e) => setFromProjectId(e.target.value)} className={inputCls}>
-                  <option value="">-- Operasional Kantor (Kas Umum) --</option>
-                  {activeProjects.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
-                  ))}
-                </select>
-              </Field>
               <Field label="Penerima Talangan">
                 <select value={toProjectId} onChange={(e) => setToProjectId(e.target.value)} className={inputCls}>
                   <option value="">-- Operasional Kantor (Kas Umum) --</option>
                   {activeProjects.map((p) => (
-                    <option key={p.id} value={p.id}>{p.name}</option>
+                    <option key={p.id} value={p.id}>
+                      {p.isDebtProject ? "[Utang Project] " : ""}
+                      {p.name}
+                    </option>
                   ))}
                 </select>
               </Field>
+
+              {targetAnalysis && (
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
+                  <div className="flex justify-between"><span className="text-slate-500">Bahan belum ada dananya</span><span className="font-mono font-bold">{formatRupiah(targetAnalysis.materialGap)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Sisa tagihan proyek ini</span><span className="font-mono font-bold text-blue-600">{formatRupiah(targetAnalysis.outstanding)}</span></div>
+                  <div className="flex justify-between text-emerald-700"><span>Batas talangan aman (kembali dari pelunasan)</span><span className="font-mono font-bold">{formatRupiah(targetAnalysis.safeTalangan)}</span></div>
+                  {targetAnalysis.hole > 0 && (
+                    <div className="flex justify-between text-rose-700"><span>Lubang — danai dari Rek 4, tidak kembali</span><span className="font-mono font-bold">{formatRupiah(targetAnalysis.hole)}</span></div>
+                  )}
+                </div>
+              )}
+
+              <Field label="Sumber Dana">
+                <select value={supportSource} onChange={(e) => setSupportSource(e.target.value)} className={inputCls}>
+                  <option value="REK4">Dana Pemulihan — Rek 4 Cadangan Profit (saldo {formatRupiah(balances.rek4)})</option>
+                  <option value="REK3">Kas Operasional — Rek 3 (saldo {formatRupiah(balances.rek3)})</option>
+                  <optgroup label="Dana HPP proyek lain (Rek 2)">
+                    {activeProjects
+                      .filter((p) => p.id !== toProjectId)
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                  </optgroup>
+                </select>
+              </Field>
+
+              {lenderAnalysis && (
+                <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 space-y-1">
+                  <div className="flex justify-between"><span>Dana HPP {lenderAnalysis.project.name}</span><span className="font-mono font-bold">{formatRupiah(lenderAnalysis.fund)}</span></div>
+                  <div className="flex justify-between"><span>Kebutuhan bahan + labour proyek itu sendiri</span><span className="font-mono font-bold">{formatRupiah(lenderAnalysis.remMaterial + lenderAnalysis.remLabour)}</span></div>
+                  {lenderAnalysis.fund < lenderAnalysis.remMaterial ? (
+                    <p className="font-bold text-rose-700 pt-1">
+                      Dana HPP proyek ini sendiri belum cukup untuk bahannya. Talangan akan memperbesar kekurangannya —
+                      lebih aman dari Rek 4.
+                    </p>
+                  ) : (
+                    supportNum > 0 &&
+                    lenderAnalysis.fund - supportNum < lenderAnalysis.remMaterial && (
+                      <p className="font-bold text-rose-700 pt-1">
+                        Setelah talangan, bahan proyek pemberi tidak lagi terdanai penuh. Pastikan pelunasan penerima datang
+                        sebelum bahan proyek ini harus dibeli.
+                      </p>
+                    )
+                  )}
+                </div>
+              )}
+              {supportLender && targetAnalysis && supportNum > targetAnalysis.safeTalangan && (
+                <p className="text-xs font-bold text-rose-700">
+                  Melebihi batas aman {formatRupiah(targetAnalysis.safeTalangan)} — kelebihannya sebaiknya dari Rek 4.
+                </p>
+              )}
+
               <Field label="Nominal Talangan (Rp)">
                 <input required type="number" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputCls} font-mono`} placeholder="Contoh: 15000000" />
               </Field>
               <Field label="Keperluan">
-                <input required type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Contoh: Beli HPL darurat sebelum termin cair" />
+                <input required type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Contoh: Beli HPL untuk utang project" />
               </Field>
               {dateField}
               <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 leading-relaxed">
-                Talangan dicatat <strong>OUTSTANDING</strong> sampai dikembalikan. Saat pelunasan proyek penerima dicatat,
-                sistem menawarkan pengembalian otomatis.
+                Talangan dicatat <strong>OUTSTANDING</strong> dan otomatis dikembalikan ke sumbernya saat pelunasan proyek
+                penerima dicatat.
               </div>
             </>
           )}

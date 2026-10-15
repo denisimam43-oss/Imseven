@@ -13,6 +13,17 @@ export interface Project {
   completedAt?: number; // tanggal serah terima
   clientNotes?: string;
   archived?: boolean; // proyek diarsipkan (tidak dihapus agar jejak keuangan tetap ada)
+
+  // ---- Utang Project ----
+  // Proyek yang DP-nya sudah terpakai (untuk keperluan lain), sehingga bahan &
+  // labour-nya harus didanai dari sumber lain dan ditutup dari pelunasannya.
+  isDebtProject?: boolean;
+  estMaterial?: number; // estimasi total biaya bahan (default 40% kontrak)
+  estLabour?: number; // estimasi total labour (default 13% kontrak)
+  expectedSettlementAt?: number; // perkiraan tanggal pelunasan
+  // Koreksi saldo "dana HPP proyek" agar sesuai uang yang benar-benar masih ada
+  // (mis. DP sudah terpakai -> dana tersedia = 0).
+  fundAdjustment?: number;
 }
 
 export type RekeningType = "REK1" | "REK2" | "REK3" | "REK4";
@@ -91,22 +102,37 @@ export interface ProjectSupport {
   date: number;
   status: "OUTSTANDING" | "RETURNED";
   returnedAt?: number;
-  account?: RekeningType; // default REK2
+  account?: RekeningType; // rekening sumber dana (default REK2)
+  toAccount?: RekeningType; // rekening penerima (default sama dengan sumber)
 }
 
-// Konfigurasi Target Sesuai SOP Seven Interior
 export type FilterPeriod = "7_DAYS" | "THIS_MONTH" | "6_MONTHS" | "THIS_YEAR";
-export type TargetScenario = "SKENARIO_A" | "SKENARIO_B";
 
-export const OPEX_TARGET_BULANAN = 73650000;
-export const TARGET_SKENARIO_A = 300000000; // Skenario A: All Interior (Rp 300 Juta)
-export const TARGET_SKENARIO_B = 270000000; // Skenario B: Reguler 9 Proyek @ Rp 30 Juta (Rp 270 Juta)
+// ---------- Pengaturan keuangan (bisa diubah di aplikasi) ----------
 
-// SOP alokasi dari NILAI KONTRAK:
-// - 0% s/d 60% pertama yang diterima  -> Rek 2 (53%) & Rek 3 (7%)
-// - 60% s/d 100% yang diterima        -> Rek 3 (20%) & Rek 4 (20%)
-export const SOP_ALLOCATION = {
-  firstStagePct: 0.6,
-  firstStage: { REK2: 0.53, REK3: 0.07 },
-  secondStage: { REK3: 0.2, REK4: 0.2 },
+/** Porsi alokasi setiap uang masuk, dalam persen (total 100). */
+export interface AllocationShares {
+  bahan: number; // HPP bahan            -> Rek 2
+  labour: number; // HPP labour/tukang   -> Rek 2
+  ops: number; // operasional kantor     -> Rek 3
+  kontingensi: number; //                -> Rek 3
+  prive: number; //                      -> Rek 3
+  expense: number; // biaya tetap/bulan  -> Rek 3
+  profit: number; //                     -> Rek 4
+}
+
+export interface FinanceSettings {
+  shares: AllocationShares;
+  monthlyExpense: number; // biaya tetap (gaji, sewa, dll) per bulan
+  monthlyOffice: number; // biaya operasional kantor per bulan
+  avgProjectValue: number; // rata-rata nilai kontrak (0 = hitung otomatis)
+  recoveryMonths: number; // target lama menutup lubang utang project
+}
+
+export const DEFAULT_SETTINGS: FinanceSettings = {
+  shares: { bahan: 40, labour: 13, ops: 3, kontingensi: 2, prive: 2, expense: 20, profit: 20 },
+  monthlyExpense: 60000000,
+  monthlyOffice: 13650000,
+  avgProjectValue: 0,
+  recoveryMonths: 6,
 };

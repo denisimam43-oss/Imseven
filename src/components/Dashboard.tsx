@@ -8,6 +8,7 @@ import { ProjectList, TransactionHistory } from "./Lists";
 import { DailyExpenseReport } from "./DailyExpenseReport";
 import { ProjectReport } from "./ProjectReport";
 import { ProjectSupportManager } from "./ProjectSupportManager";
+import { StrategyPanel } from "./StrategyPanel";
 import { Modals, ModalType } from "./Modals";
 import {
   PlusCircle,
@@ -25,6 +26,7 @@ import {
   Repeat,
   Download,
   ShieldAlert,
+  LifeBuoy,
 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
 import { FilterPeriod } from "../types";
@@ -38,13 +40,14 @@ export function Dashboard() {
     setModal(m);
   };
   const [activeTab, setActiveTab] = useState<
-    "ALL" | "OVERVIEW" | "PROJECTS" | "SUPPORTS" | "EXPENSES"
+    "ALL" | "OVERVIEW" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "EXPENSES"
   >("ALL");
 
   const {
     filterPeriod,
     setFilterPeriod,
     balances,
+    debt,
     needsReconcile,
     dismissReconcile,
     exportData,
@@ -345,6 +348,19 @@ export function Dashboard() {
           Ringkasan & Firewall Kas
         </button>
         <button
+          onClick={() => setActiveTab("STRATEGY")}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap",
+            activeTab === "STRATEGY"
+              ? "bg-slate-900 text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100"
+          )}
+        >
+          <LifeBuoy size={14} />
+          Strategi Utang & Target
+          {debt.totalHole > 0 && <span className="w-2 h-2 rounded-full bg-rose-500" />}
+        </button>
+        <button
           onClick={() => setActiveTab("PROJECTS")}
           className={cn(
             "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap",
@@ -391,8 +407,19 @@ export function Dashboard() {
           <AccountCards />
           <FinancialSummary />
           <BudgetControl />
-          <TargetsAndProgress />
+          {activeTab === "OVERVIEW" && <TargetsAndProgress />}
           <CashFlowChart />
+        </>
+      )}
+
+      {/* TAB CONTENT: STRATEGI UTANG & TARGET */}
+      {(activeTab === "ALL" || activeTab === "STRATEGY") && (
+        <>
+          <StrategyPanel
+            onSupport={(id) => openModal("NEW_SUPPORT", id)}
+            onPayment={(id) => openModal("NEW_PAYMENT", id)}
+          />
+          <TargetsAndProgress />
         </>
       )}
 
