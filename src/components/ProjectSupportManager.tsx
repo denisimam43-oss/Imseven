@@ -131,7 +131,7 @@ export function ProjectSupportManager({
             {formatRupiah(totalOutstanding)}
           </p>
           <p className="text-[11px] text-amber-700/80 mt-1">
-            Liabilitas aktif yang harus dikembalikan saat pelunasan 40%
+            Liabilitas aktif yang harus dikembalikan saat pelunasan
           </p>
         </div>
 

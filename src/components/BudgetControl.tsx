@@ -1,5 +1,6 @@
 import React from "react";
 import { useFinance } from "../store/FinanceContext";
+import { isRealIncome, isRealExpense } from "../finance";
 import { formatRupiah, cn } from "../utils";
 import { ShieldCheck, AlertTriangle } from "lucide-react";
 
@@ -8,13 +9,13 @@ export function BudgetControl() {
 
   // --- Calculations for Budget Locks ---
   const rawOmset = filteredTransactions
-    .filter((t) => t.type === "INCOME" && !t.supportId)
+    .filter((t) => isRealIncome(t))
     .reduce((sum, t) => sum + t.amount, 0);
 
   const markupFee = filteredTransactions
     .filter(
       (t) =>
-        t.type === "EXPENSE" &&
+        isRealExpense(t) &&
         (t.expenseCategory?.includes("Tax Reserve") ||
           t.expenseCategory?.includes("Markup"))
     )
@@ -26,8 +27,7 @@ export function BudgetControl() {
   const hppSpent = filteredTransactions
     .filter(
       (t) =>
-        t.type === "EXPENSE" &&
-        !t.supportId &&
+        isRealExpense(t) &&
         t.expenseCategory?.startsWith("HPP")
     )
     .reduce((sum, t) => sum + t.amount, 0);
@@ -35,8 +35,7 @@ export function BudgetControl() {
   const kontingensiSpent = filteredTransactions
     .filter(
       (t) =>
-        t.type === "EXPENSE" &&
-        !t.supportId &&
+        isRealExpense(t) &&
         t.expenseCategory?.includes("Kontingensi")
     )
     .reduce((sum, t) => sum + t.amount, 0);
@@ -44,8 +43,7 @@ export function BudgetControl() {
   const priveSpent = filteredTransactions
     .filter(
       (t) =>
-        t.type === "EXPENSE" &&
-        !t.supportId &&
+        isRealExpense(t) &&
         t.expenseCategory?.includes("Prive")
     )
     .reduce((sum, t) => sum + t.amount, 0);
@@ -53,8 +51,7 @@ export function BudgetControl() {
   const opexKantorSpent = filteredTransactions
     .filter(
       (t) =>
-        t.type === "EXPENSE" &&
-        !t.supportId &&
+        isRealExpense(t) &&
         t.expenseCategory?.startsWith("Opex -") &&
         !t.expenseCategory?.includes("Prive") &&
         !t.expenseCategory?.includes("Kontingensi")
@@ -64,8 +61,7 @@ export function BudgetControl() {
   const opexTetapSpent = filteredTransactions
     .filter(
       (t) =>
-        t.type === "EXPENSE" &&
-        !t.supportId &&
+        isRealExpense(t) &&
         t.expenseCategory?.startsWith("Opex Tetap")
     )
     .reduce((sum, t) => sum + t.amount, 0);
@@ -73,8 +69,7 @@ export function BudgetControl() {
   const totalExpense = filteredTransactions
     .filter(
       (t) =>
-        t.type === "EXPENSE" &&
-        !t.supportId &&
+        isRealExpense(t) &&
         !(
           t.expenseCategory?.includes("Tax Reserve") ||
           t.expenseCategory?.includes("Markup")

@@ -8,7 +8,7 @@ import { ProjectList, TransactionHistory } from "./Lists";
 import { DailyExpenseReport } from "./DailyExpenseReport";
 import { ProjectReport } from "./ProjectReport";
 import { ProjectSupportManager } from "./ProjectSupportManager";
-import { Modals } from "./Modals";
+import { Modals, ModalType } from "./Modals";
 import {
   PlusCircle,
   ArrowDownRight,
@@ -21,20 +21,72 @@ import {
   FileSpreadsheet,
   AlertTriangle,
   Layers,
+  HandCoins,
+  Repeat,
+  Download,
+  ShieldAlert,
 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
 import { FilterPeriod } from "../types";
 import { formatRupiah, cn } from "../utils";
 
 export function Dashboard() {
-  const [modal, setModal] = useState<
-    "NEW_PROJECT" | "NEW_EXPENSE" | "NEW_SUPPORT" | "CHANGE_PASSWORD" | null
-  >(null);
+  const [modal, setModal] = useState<ModalType | null>(null);
+  const [modalProjectId, setModalProjectId] = useState<string | undefined>();
+  const openModal = (m: ModalType, projectId?: string) => {
+    setModalProjectId(projectId);
+    setModal(m);
+  };
   const [activeTab, setActiveTab] = useState<
     "ALL" | "OVERVIEW" | "PROJECTS" | "SUPPORTS" | "EXPENSES"
   >("ALL");
 
-  const { filterPeriod, setFilterPeriod, balances } = useFinance();
+  const {
+    filterPeriod,
+    setFilterPeriod,
+    balances,
+    needsReconcile,
+    dismissReconcile,
+    exportData,
+    importData,
+  } = useFinance();
+
+  const handleExport = () => {
+    const data = exportData();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const d = new Date();
+    a.href = url;
+    a.download = `backup-keuangan-seven-interior-${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    try {
+      localStorage.setItem("seven_interior_last_backup", String(Date.now()));
+    } catch {
+      /* abaikan */
+    }
+  };
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!window.confirm("Pulihkan data dari file backup? Data yang ada di perangkat ini akan diganti.")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const res = importData(JSON.parse(String(reader.result)));
+        alert(res.message);
+      } catch {
+        alert("File tidak bisa dibaca. Pastikan memilih file backup .json dari aplikasi ini.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const lastBackup = Number(localStorage.getItem("seven_interior_last_backup") || 0);
+  const backupStale = Date.now() - lastBackup > 7 * 24 * 3600 * 1000;
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -101,7 +153,7 @@ export function Dashboard() {
               </span>
             </div>
             <p className="text-xs font-medium text-slate-500 mt-0.5">
-              Firewall 4 Rekening Real-time • Milestone DP 60% & Pelunasan 40% • Subsidi Silang Antar Proyek
+              Firewall 4 Rekening • Pembayaran Sesuai Fakta • Laba Diakui Saat Serah Terima
             </p>
           </div>
         </div>
@@ -118,7 +170,21 @@ export function Dashboard() {
             <LogOut size={13} className="mr-1.5" /> Logout
           </button>
           <button
-            onClick={() => setModal("CHANGE_PASSWORD")}
+            onClick={handleExport}
+            className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-navy-300 hover:bg-slate-50 transition-colors uppercase tracking-wider shadow-sm"
+            title="Unduh backup data (.json)"
+          >
+            <Download size={13} className="mr-1.5" /> Backup
+          </button>
+          <label
+            className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-navy-300 hover:bg-slate-50 transition-colors uppercase tracking-wider shadow-sm cursor-pointer"
+            title="Pulihkan data dari file backup"
+          >
+            <Upload size={13} className="mr-1.5" /> Pulihkan
+            <input type="file" accept="application/json,.json" className="hidden" onChange={handleImport} />
+          </label>
+          <button
+            onClick={() => openModal("CHANGE_PASSWORD")}
             className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-navy-300 hover:bg-slate-50 transition-colors uppercase tracking-wider shadow-sm"
           >
             Sandi
@@ -147,7 +213,7 @@ export function Dashboard() {
           {/* Action Buttons */}
           <div className="flex flex-wrap bg-white border border-slate-200 rounded-xl p-1 shadow-sm gap-1">
             <button
-              onClick={() => setModal("NEW_PROJECT")}
+              onClick={() => openModal("NEW_PROJECT")}
               className="flex items-center px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-navy-50 hover:text-navy-700 rounded-lg transition-colors whitespace-nowrap uppercase tracking-wider"
             >
               <PlusCircle size={13} className="mr-1.5 text-navy-600" />
@@ -155,7 +221,15 @@ export function Dashboard() {
             </button>
             <div className="w-px bg-slate-200 my-1 hidden sm:block" />
             <button
-              onClick={() => setModal("NEW_EXPENSE")}
+              onClick={() => openModal("NEW_PAYMENT")}
+              className="flex items-center px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-emerald-50 hover:text-emerald-700 rounded-lg transition-colors whitespace-nowrap uppercase tracking-wider"
+            >
+              <HandCoins size={13} className="mr-1.5 text-emerald-600" />
+              Terima Bayar
+            </button>
+            <div className="w-px bg-slate-200 my-1 hidden sm:block" />
+            <button
+              onClick={() => openModal("NEW_EXPENSE")}
               className="flex items-center px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-rose-50 hover:text-rose-700 rounded-lg transition-colors whitespace-nowrap uppercase tracking-wider"
             >
               <ArrowDownRight size={13} className="mr-1.5 text-rose-500" />
@@ -163,7 +237,15 @@ export function Dashboard() {
             </button>
             <div className="w-px bg-slate-200 my-1 hidden sm:block" />
             <button
-              onClick={() => setModal("NEW_SUPPORT")}
+              onClick={() => openModal("NEW_TRANSFER")}
+              className="flex items-center px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-sky-50 hover:text-sky-700 rounded-lg transition-colors whitespace-nowrap uppercase tracking-wider"
+            >
+              <Repeat size={13} className="mr-1.5 text-sky-500" />
+              Transfer
+            </button>
+            <div className="w-px bg-slate-200 my-1 hidden sm:block" />
+            <button
+              onClick={() => openModal("NEW_SUPPORT")}
               className="flex items-center px-3 py-1.5 text-xs font-bold text-slate-700 hover:bg-amber-50 hover:text-amber-700 rounded-lg transition-colors whitespace-nowrap uppercase tracking-wider"
             >
               <ArrowLeftRight size={13} className="mr-1.5 text-amber-500" />
@@ -172,6 +254,40 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {needsReconcile && (
+        <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-purple-900">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-purple-600 text-white rounded-xl shrink-0">
+              <ShieldAlert size={18} />
+            </div>
+            <div className="text-xs">
+              <p className="font-bold uppercase tracking-wider">Sistem keuangan diperbarui: cocokkan saldo sekali</p>
+              <p className="mt-0.5 text-purple-800">
+                Versi lama menghitung saldo Rek 1 dua kali. Data lama sudah dikonversi (cadangan aslinya tetap disimpan).
+                Cek saldo tiap rekening di bawah dengan saldo bank hari ini, lalu klik ikon pensil untuk menyesuaikan yang berbeda.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={dismissReconcile}
+            className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors shadow-sm self-start sm:self-auto shrink-0"
+          >
+            Sudah Dicocokkan
+          </button>
+        </div>
+      )}
+
+      {!needsReconcile && backupStale && (
+        <div className="mb-6 p-3 bg-slate-100 border border-slate-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-700">
+          <span>
+            Data hanya tersimpan di browser perangkat ini. Unduh backup minimal seminggu sekali agar tidak hilang.
+          </span>
+          <button onClick={handleExport} className="px-3 py-1.5 bg-slate-800 text-white font-bold uppercase tracking-wider rounded-xl self-start sm:self-auto shrink-0">
+            Backup Sekarang
+          </button>
+        </div>
+      )}
 
       {/* Outstanding Support Warning Alert */}
       {balances.totalOutstandingSupport > 0 && (
@@ -283,14 +399,14 @@ export function Dashboard() {
       {/* TAB CONTENT: PROJECTS */}
       {(activeTab === "ALL" || activeTab === "PROJECTS") && (
         <div className="space-y-8 mb-8">
-          <ProjectList />
+          <ProjectList onPayment={(id) => openModal("NEW_PAYMENT", id)} />
           <ProjectReport />
         </div>
       )}
 
       {/* TAB CONTENT: SUPPORTS (SUBSIDI SILANG) */}
       {(activeTab === "ALL" || activeTab === "SUPPORTS") && (
-        <ProjectSupportManager onOpenAddModal={() => setModal("NEW_SUPPORT")} />
+        <ProjectSupportManager onOpenAddModal={() => openModal("NEW_SUPPORT")} />
       )}
 
       {/* TAB CONTENT: EXPENSES & HISTORY */}
@@ -302,7 +418,7 @@ export function Dashboard() {
       )}
 
       {/* Modals Provider */}
-      <Modals activeModal={modal} close={() => setModal(null)} />
+      <Modals activeModal={modal} close={() => setModal(null)} initialProjectId={modalProjectId} />
     </div>
   );
 }

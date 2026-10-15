@@ -1,5 +1,6 @@
 import React from "react";
 import { useFinance } from "../store/FinanceContext";
+import { isRealIncome, isRealExpense } from "../finance";
 import {
   OPEX_TARGET_BULANAN,
   TARGET_SKENARIO_A,
@@ -19,13 +20,13 @@ export function TargetsAndProgress() {
   const isTargetAchieved = balances.opexCollectedThisMonth >= OPEX_TARGET_BULANAN;
 
   const rawOmset = filteredTransactions
-    .filter((t) => t.type === "INCOME" && !t.supportId)
+    .filter((t) => isRealIncome(t))
     .reduce((sum, t) => sum + t.amount, 0);
 
   const markupFee = filteredTransactions
     .filter(
       (t) =>
-        t.type === "EXPENSE" &&
+        isRealExpense(t) &&
         (t.expenseCategory?.includes("Tax Reserve") ||
           t.expenseCategory?.includes("Markup"))
     )

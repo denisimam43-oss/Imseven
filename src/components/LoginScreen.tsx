@@ -30,11 +30,10 @@ export function LoginScreen({ onLogin }: { onLogin: () => void }) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const storedPassword = localStorage.getItem('adminPassword') || 'admin123';
-    // Allow either the stored password OR default password 'admin123'
-    if (username.toLowerCase() === 'admin' && (password === storedPassword || password === 'admin123')) {
+    if (username.toLowerCase() === 'admin' && password === storedPassword) {
       onLogin();
     } else {
-      setError('Kredensial tidak valid. Gunakan Username: admin / Password: ' + storedPassword + ' (atau admin123)');
+      setError('Username atau kata sandi salah.');
     }
   };
 
@@ -52,7 +51,8 @@ export function LoginScreen({ onLogin }: { onLogin: () => void }) {
   };
 
   const handleClearCache = () => {
-    if (window.confirm('Anda yakin ingin menghapus semua data (cache)? Ini akan mereset password, logo, dan data transaksi ke awal.')) {
+    const answer = window.prompt('PERINGATAN: Semua proyek dan transaksi di perangkat ini akan TERHAPUS PERMANEN. Pastikan sudah mengunduh Backup.\n\nKetik HAPUS untuk melanjutkan.');
+    if (answer === 'HAPUS') {
       localStorage.clear();
       sessionStorage.clear();
       window.location.reload();

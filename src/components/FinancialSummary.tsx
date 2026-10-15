@@ -1,5 +1,6 @@
 import React, { useMemo } from "react";
 import { useFinance } from "../store/FinanceContext";
+import { isRealIncome, isRealExpense } from "../finance";
 import { formatRupiah } from "../utils";
 import { TrendingUp, TrendingDown, DollarSign, Clock, ArrowLeftRight } from "lucide-react";
 
@@ -17,11 +18,11 @@ export function FinancialSummary() {
     });
 
     const income = currentMonthTransactions
-      .filter((t) => t.type === "INCOME" && !t.supportId)
+      .filter((t) => isRealIncome(t))
       .reduce((acc, t) => acc + t.amount, 0);
 
     const expenses = currentMonthTransactions
-      .filter((t) => t.type === "EXPENSE" && !t.supportId)
+      .filter((t) => isRealExpense(t))
       .reduce((acc, t) => acc + t.amount, 0);
 
     const netProfit = income - expenses;
@@ -34,10 +35,10 @@ export function FinancialSummary() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 mb-6">
         <div>
           <h2 className="text-lg font-bold text-slate-800 uppercase tracking-tight">
-            Ringkasan Finansial Bulan Ini
+            Ringkasan Arus Kas Bulan Ini
           </h2>
           <p className="text-xs text-slate-500 font-medium">
-            Kalkulasi omset riil, pengeluaran, margin keuntungan, serta piutang dan liabilitas talangan.
+            Uang yang benar-benar masuk & keluar bulan ini. Laba proyek ada di Laporan Laba Rugi.
           </p>
         </div>
         <div className="text-xs font-semibold px-3 py-1 bg-slate-100 text-slate-600 rounded-lg self-start md:self-auto">
@@ -50,7 +51,7 @@ export function FinancialSummary() {
         <div className="p-4 bg-emerald-50/60 rounded-xl border border-emerald-100 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-2">
             <p className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">
-              Total Pemasukan
+              Kas Masuk
             </p>
             <span className="p-1 bg-emerald-100 text-emerald-700 rounded-md">
               <TrendingUp size={14} />
@@ -60,7 +61,7 @@ export function FinancialSummary() {
             {formatRupiah(currentMonthData.income)}
           </p>
           <p className="text-[10px] text-emerald-600/80 mt-1">
-            DP 60% & Pelunasan 40%
+            DP, termin & pelunasan klien
           </p>
         </div>
 
@@ -68,7 +69,7 @@ export function FinancialSummary() {
         <div className="p-4 bg-rose-50/60 rounded-xl border border-rose-100 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-2">
             <p className="text-[10px] font-bold text-rose-700 uppercase tracking-wider">
-              Total Pengeluaran
+              Kas Keluar
             </p>
             <span className="p-1 bg-rose-100 text-rose-700 rounded-md">
               <TrendingDown size={14} />
@@ -86,7 +87,7 @@ export function FinancialSummary() {
         <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 text-white flex flex-col justify-between">
           <div className="flex items-center justify-between mb-2">
             <p className="text-[10px] font-bold text-slate-300 uppercase tracking-wider">
-              Laba Bersih
+              Arus Kas Bersih
             </p>
             <span className="p-1 bg-slate-800 text-emerald-400 rounded-md">
               <DollarSign size={14} />
@@ -97,15 +98,15 @@ export function FinancialSummary() {
             {formatRupiah(currentMonthData.netProfit)}
           </p>
           <p className="text-[10px] text-slate-400 mt-1">
-            Net cashflow bulan berjalan
+            Kas masuk - kas keluar (bukan laba)
           </p>
         </div>
 
-        {/* Piutang Pelunasan 40% */}
+        {/* Sisa Tagihan Klien */}
         <div className="p-4 bg-blue-50/60 rounded-xl border border-blue-100 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-2">
             <p className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">
-              Piutang Pelunasan 40%
+              Sisa Tagihan Klien
             </p>
             <span className="p-1 bg-blue-100 text-blue-700 rounded-md">
               <Clock size={14} />
@@ -115,7 +116,7 @@ export function FinancialSummary() {
             {formatRupiah(balances.totalPiutangPelunasan)}
           </p>
           <p className="text-[10px] text-blue-600/80 mt-1">
-            Akan cair setelah proyek selesai
+            Total belum dibayar dari semua proyek
           </p>
         </div>
 

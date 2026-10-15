@@ -9,32 +9,96 @@ import React, {
 import {
   Project,
   Transaction,
-  IncomeSplits,
   RekeningType,
   FilterPeriod,
   ProjectSupport,
   TargetScenario,
+  IncomeType,
 } from "../types";
 import { generateId } from "../utils";
+import {
+  buildAllocationTransfers,
+  computeBalances,
+  computeSopAllocation,
+  inflowTo,
+  isRealIncome,
+  migrateTransactions,
+  needsMigration,
+  outstandingSupportFor,
+  summarizeProject,
+} from "../finance";
+
+const KEY_PROJECTS = "seven_interior_projects_v3";
+const KEY_TRANSACTIONS = "seven_interior_transactions_v3";
+const KEY_SUPPORTS = "seven_interior_supports_v1";
+const KEY_RECONCILE = "seven_interior_needs_reconcile";
+const KEY_BACKUP_V1 = "seven_interior_backup_pre_v2";
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export interface PaymentInput {
+  projectId: string;
+  amount: number;
+  date: number;
+  incomeType: IncomeType;
+  allocate: boolean; // langsung pindahkan dari Rek 1 ke Rek 2/3/4 sesuai SOP
+  description?: string;
+  settleSupports?: boolean; // kembalikan talangan proyek ini sekaligus
+}
+
+export interface BackupData {
+  app: "seven-interior-finance";
+  version: 2;
+  exportedAt: number;
+  projects: Project[];
+  transactions: Transaction[];
+  supports: ProjectSupport[];
+}
 
 interface FinanceState {
-  projects: Project[];
+  projects: Project[]; // semua proyek termasuk arsip
+  activeProjects: Project[]; // proyek yang tidak diarsipkan
   transactions: Transaction[];
   filteredTransactions: Transaction[];
   supports: ProjectSupport[];
   filterPeriod: FilterPeriod;
   setFilterPeriod: (period: FilterPeriod) => void;
+  isInPeriod: (ts: number) => boolean;
   targetScenario: TargetScenario;
   setTargetScenario: (scenario: TargetScenario) => void;
-  addProject: (name: string, totalValue: number, clientNotes?: string) => void;
-  payPelunasan: (projectId: string, autoSettleSupports?: boolean) => void;
-  deleteProject: (id: string) => void;
+  addProject: (
+    name: string,
+    totalValue: number,
+    clientNotes?: string,
+    firstPayment?: Omit<PaymentInput, "projectId">,
+  ) => void;
+  updateProject: (id: string, data: Partial<Pick<Project, "name" | "totalValue" | "clientNotes">>) => void;
+  receivePayment: (input: PaymentInput) => void;
+  completeProject: (projectId: string, date: number) => void;
+  reopenProject: (projectId: string) => void;
+  archiveProject: (projectId: string, archived: boolean) => void;
+  deleteProject: (id: string) => boolean; // hanya bisa jika belum ada transaksi
   addExpense: (
     account: RekeningType,
     amount: number,
     description: string,
     category: string,
     projectId?: string,
+    date?: number,
+  ) => void;
+  addTransfer: (
+    from: RekeningType,
+    to: RekeningType,
+    amount: number,
+    description: string,
+    date?: number,
   ) => void;
   addSupport: (
     fromProjectId: string | undefined,
@@ -44,8 +108,9 @@ interface FinanceState {
     amount: number,
     description: string,
     account?: RekeningType,
+    date?: number,
   ) => void;
-  settleSupport: (supportId: string) => void;
+  settleSupport: (supportId: string, date?: number) => void;
   deleteSupport: (supportId: string) => void;
   balances: {
     rek1: number;
@@ -54,200 +119,248 @@ interface FinanceState {
     rek4: number;
     totalOmset: number;
     opexCollectedThisMonth: number;
-    totalPiutangPelunasan: number;
+    totalPiutangPelunasan: number; // total sisa tagihan ke klien (semua proyek aktif)
     totalOutstandingSupport: number;
   };
   filteredBalances: { totalOmset: number; opexCollected: number };
   deleteTransaction: (id: string) => void;
   updateTransaction: (id: string, data: Partial<Transaction>) => void;
   adjustBalance: (account: RekeningType, newBalance: number) => void;
+  needsReconcile: boolean;
+  dismissReconcile: () => void;
+  exportData: () => BackupData;
+  importData: (data: unknown) => { ok: boolean; message: string };
 }
 
 const FinanceContext = createContext<FinanceState | undefined>(undefined);
 
 export function FinanceProvider({ children }: { children: ReactNode }) {
-  const [projects, setProjects] = useState<Project[]>(() => {
-    const saved = localStorage.getItem("seven_interior_projects_v3");
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [projects, setProjects] = useState<Project[]>(() => readJson(KEY_PROJECTS, []));
+
+  const [needsReconcile, setNeedsReconcile] = useState<boolean>(
+    () => localStorage.getItem(KEY_RECONCILE) === "true",
+  );
 
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
-    const saved = localStorage.getItem("seven_interior_transactions_v3");
-    return saved ? JSON.parse(saved) : [];
+    const saved = readJson<Transaction[]>(KEY_TRANSACTIONS, []);
+    if (needsMigration(saved)) {
+      // Simpan cadangan data lama sebelum dikonversi
+      try {
+        localStorage.setItem(
+          KEY_BACKUP_V1,
+          JSON.stringify({
+            projects: readJson(KEY_PROJECTS, []),
+            transactions: saved,
+            supports: readJson(KEY_SUPPORTS, []),
+            savedAt: Date.now(),
+          }),
+        );
+        localStorage.setItem(KEY_RECONCILE, "true");
+      } catch {
+        /* abaikan jika penyimpanan penuh */
+      }
+      return migrateTransactions(saved);
+    }
+    return saved;
   });
 
-  const [supports, setSupports] = useState<ProjectSupport[]>(() => {
-    const saved = localStorage.getItem("seven_interior_supports_v1");
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [supports, setSupports] = useState<ProjectSupport[]>(() => readJson(KEY_SUPPORTS, []));
 
   const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>("THIS_MONTH");
   const [targetScenario, setTargetScenario] = useState<TargetScenario>("SKENARIO_B");
 
-  // Save on change to ensure data persistence
   useEffect(() => {
-    localStorage.setItem(
-      "seven_interior_projects_v3",
-      JSON.stringify(projects),
-    );
+    // Status ini bisa diset saat migrasi di inisialisasi state transaksi
+    if (localStorage.getItem(KEY_RECONCILE) === "true") setNeedsReconcile(true);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(KEY_PROJECTS, JSON.stringify(projects));
   }, [projects]);
-
   useEffect(() => {
-    localStorage.setItem(
-      "seven_interior_transactions_v3",
-      JSON.stringify(transactions),
-    );
+    localStorage.setItem(KEY_TRANSACTIONS, JSON.stringify(transactions));
   }, [transactions]);
-
   useEffect(() => {
-    localStorage.setItem(
-      "seven_interior_supports_v1",
-      JSON.stringify(supports),
-    );
+    localStorage.setItem(KEY_SUPPORTS, JSON.stringify(supports));
   }, [supports]);
 
-  const addProject = (name: string, totalValue: number, clientNotes?: string) => {
+  const dismissReconcile = () => {
+    localStorage.removeItem(KEY_RECONCILE);
+    setNeedsReconcile(false);
+  };
+
+  // ---------- Proyek & pembayaran ----------
+
+  const buildPayment = (
+    project: Project,
+    input: Omit<PaymentInput, "projectId">,
+    existing: Transaction[],
+  ): Transaction[] => {
+    const income: Transaction = {
+      id: generateId(),
+      date: input.date,
+      createdAt: Date.now(),
+      description:
+        input.description?.trim() ||
+        `${input.incomeType === "DP" ? "DP" : input.incomeType === "TERMIN" ? "Termin" : input.incomeType === "PELUNASAN" ? "Pelunasan" : "Pembayaran"} - ${project.name}`,
+      type: "INCOME",
+      amount: input.amount,
+      projectId: project.id,
+      incomeType: input.incomeType,
+      account: "REK1",
+    };
+    if (!input.allocate) return [income];
+    const alreadyReceived = existing
+      .filter((t) => t.projectId === project.id && isRealIncome(t))
+      .reduce((s, t) => s + t.amount, 0);
+    const split = computeSopAllocation(project.totalValue, alreadyReceived, input.amount);
+    return [income, ...buildAllocationTransfers(income, split, project.name)];
+  };
+
+  const addProject: FinanceState["addProject"] = (name, totalValue, clientNotes, firstPayment) => {
     const newProject: Project = {
       id: generateId(),
       name,
       type: "PROJECT",
       status: "ONGOING",
       totalValue,
-      createdAt: Date.now(),
+      createdAt: firstPayment?.date ?? Date.now(),
       clientNotes,
     };
-
-    // DP 60% logic
-    // 53% total -> Rek 2 (Lock Proyek: HPP & Tukang)
-    // 7% total -> Rek 3 (Lock OpEx: Ops Kantor 3%, Kontingensi 2%, Prive 2%)
-    const amountReceived = totalValue * 0.6;
-    const splits: IncomeSplits = {
-      rek2: totalValue * 0.53,
-      rek3: totalValue * 0.07,
-      rek4: 0,
-    };
-
-    const newTransaction: Transaction = {
-      id: generateId(),
-      date: Date.now(),
-      description: `DP 60% - ${name}`,
-      type: "INCOME",
-      amount: amountReceived,
-      projectId: newProject.id,
-      incomeType: "DP_60",
-      splits,
-    };
-
     setProjects((prev) => [newProject, ...prev]);
-    setTransactions((prev) => [newTransaction, ...prev]);
+    if (firstPayment && firstPayment.amount > 0) {
+      setTransactions((prev) => [...buildPayment(newProject, firstPayment, prev), ...prev]);
+    }
   };
 
-  const payPelunasan = (projectId: string, autoSettleSupports: boolean = false) => {
-    const project = projects.find((p) => p.id === projectId);
-    if (!project) return;
+  const updateProject: FinanceState["updateProject"] = (id, data) => {
+    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...data } : p)));
+  };
 
-    // Pelunasan 40% logic
-    // 20% total -> Rek 3 (Biaya Tetap Expense)
-    // 20% total -> Rek 4 (Lock Margin Profit)
-    const amountReceived = project.totalValue * 0.4;
-    const splits: IncomeSplits = {
-      rek2: 0,
-      rek3: project.totalValue * 0.2,
-      rek4: project.totalValue * 0.2,
-    };
-
-    const newTransaction: Transaction = {
+  const settleSupportTx = (sup: ProjectSupport, date: number): Transaction[] => [
+    {
       id: generateId(),
-      date: Date.now(),
-      description: `Pelunasan 40% - ${project.name}`,
+      date,
+      createdAt: Date.now(),
+      description: `Penerimaan Pengembalian Talangan dari ${sup.toProjectName}`,
       type: "INCOME",
-      amount: amountReceived,
-      projectId: project.id,
-      incomeType: "PELUNASAN_40",
-      splits,
-    };
+      amount: sup.amount,
+      projectId: sup.fromProjectId,
+      account: sup.account || "REK2",
+      supportId: sup.id,
+    },
+    {
+      id: generateId(),
+      date,
+      createdAt: Date.now(),
+      description: `Pengembalian Talangan ke ${sup.fromProjectName} (${sup.description})`,
+      type: "EXPENSE",
+      amount: sup.amount,
+      expenseAccount: sup.account || "REK2",
+      expenseCategory: "Pengembalian Talangan Proyek",
+      projectId: sup.toProjectId,
+      supportId: sup.id,
+    },
+  ];
 
-    // Auto settle any outstanding support liabilities for this project if requested
-    if (autoSettleSupports) {
-      const outstandingForProject = supports.filter(
-        (s) => s.toProjectId === projectId && s.status === "OUTSTANDING"
-      );
-
-      if (outstandingForProject.length > 0) {
+  const receivePayment: FinanceState["receivePayment"] = (input) => {
+    const project = projects.find((p) => p.id === input.projectId);
+    if (!project) return;
+    let extra: Transaction[] = [];
+    if (input.settleSupports) {
+      const outstanding = outstandingSupportFor(supports, project.id);
+      if (outstanding.length > 0) {
+        const ids = new Set(outstanding.map((s) => s.id));
         setSupports((prev) =>
-          prev.map((s) =>
-            s.toProjectId === projectId && s.status === "OUTSTANDING"
-              ? { ...s, status: "RETURNED", returnedAt: Date.now() }
-              : s
-          )
+          prev.map((s) => (ids.has(s.id) ? { ...s, status: "RETURNED", returnedAt: input.date } : s)),
         );
-
-        const settlementTransactions: Transaction[] = outstandingForProject.map((s) => ({
-          id: generateId(),
-          date: Date.now(),
-          description: `Pengembalian Talangan ke ${s.fromProjectName} (Pelunasan Proyek)`,
-          type: "EXPENSE",
-          amount: s.amount,
-          expenseAccount: "REK2",
-          expenseCategory: "Pengembalian Talangan Proyek",
-          projectId: projectId,
-          supportId: s.id,
-        }));
-
-        setTransactions((prev) => [newTransaction, ...settlementTransactions, ...prev]);
-      } else {
-        setTransactions((prev) => [newTransaction, ...prev]);
+        extra = outstanding.flatMap((s) => settleSupportTx(s, input.date));
       }
-    } else {
-      setTransactions((prev) => [newTransaction, ...prev]);
     }
+    setTransactions((prev) => [...buildPayment(project, input, prev), ...extra, ...prev]);
+  };
 
+  const completeProject: FinanceState["completeProject"] = (projectId, date) => {
+    setProjects((prev) =>
+      prev.map((p) => (p.id === projectId ? { ...p, status: "COMPLETED", completedAt: date } : p)),
+    );
+  };
+
+  const reopenProject: FinanceState["reopenProject"] = (projectId) => {
     setProjects((prev) =>
       prev.map((p) =>
-        p.id === projectId
-          ? { ...p, status: "COMPLETED", completedAt: Date.now() }
-          : p
-      )
+        p.id === projectId ? { ...p, status: "ONGOING", completedAt: undefined } : p,
+      ),
     );
   };
 
-  const deleteProject = (id: string) => {
+  const archiveProject: FinanceState["archiveProject"] = (projectId, archived) => {
+    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, archived } : p)));
+  };
+
+  const deleteProject: FinanceState["deleteProject"] = (id) => {
+    const hasData =
+      transactions.some((t) => t.projectId === id) ||
+      supports.some((s) => s.fromProjectId === id || s.toProjectId === id);
+    if (hasData) return false;
     setProjects((prev) => prev.filter((p) => p.id !== id));
-    setTransactions((prev) => prev.filter((t) => t.projectId !== id));
-    setSupports((prev) =>
-      prev.filter((s) => s.fromProjectId !== id && s.toProjectId !== id)
-    );
+    return true;
   };
 
-  const addExpense = (
-    account: RekeningType,
-    amount: number,
-    description: string,
-    category: string,
-    projectId?: string,
+  // ---------- Pengeluaran & transfer ----------
+
+  const addExpense: FinanceState["addExpense"] = (
+    account,
+    amount,
+    description,
+    category,
+    projectId,
+    date = Date.now(),
   ) => {
-    const newTransaction: Transaction = {
-      id: generateId(),
-      date: Date.now(),
-      description,
-      type: "EXPENSE",
-      amount,
-      expenseAccount: account,
-      expenseCategory: category,
-      projectId,
-    };
-
-    setTransactions((prev) => [newTransaction, ...prev]);
+    setTransactions((prev) => [
+      {
+        id: generateId(),
+        date,
+        createdAt: Date.now(),
+        description,
+        type: "EXPENSE",
+        amount,
+        expenseAccount: account,
+        expenseCategory: category,
+        projectId,
+      },
+      ...prev,
+    ]);
   };
 
-  const addSupport = (
-    fromProjectId: string | undefined,
-    fromProjectName: string,
-    toProjectId: string | undefined,
-    toProjectName: string,
-    amount: number,
-    description: string,
-    account: RekeningType = "REK2"
+  const addTransfer: FinanceState["addTransfer"] = (from, to, amount, description, date = Date.now()) => {
+    if (from === to) return;
+    setTransactions((prev) => [
+      {
+        id: generateId(),
+        date,
+        createdAt: Date.now(),
+        description: description || `Transfer ${from} → ${to}`,
+        type: "TRANSFER",
+        amount,
+        fromAccount: from,
+        toAccount: to,
+      },
+      ...prev,
+    ]);
+  };
+
+  // ---------- Talangan ----------
+
+  const addSupport: FinanceState["addSupport"] = (
+    fromProjectId,
+    fromProjectName,
+    toProjectId,
+    toProjectName,
+    amount,
+    description,
+    account = "REK2",
+    date = Date.now(),
   ) => {
     const supportId = generateId();
     const newSupport: ProjectSupport = {
@@ -258,15 +371,16 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       toProjectName,
       amount,
       description,
-      date: Date.now(),
+      date,
       status: "OUTSTANDING",
       account,
     };
-
-    // 1. Catat pengeluaran dari proyek pemberi talangan
+    // Talangan hanya memindah "jatah" antarproyek di rekening yang sama,
+    // sehingga saldo rekening tidak berubah (keluar & masuk di rekening yang sama).
     const lenderExpense: Transaction = {
       id: generateId(),
-      date: Date.now(),
+      date,
+      createdAt: Date.now(),
       description: `Talangan Keluar: untuk ${toProjectName} (${description})`,
       type: "EXPENSE",
       amount,
@@ -275,272 +389,196 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       projectId: fromProjectId,
       supportId,
     };
-
-    // 2. Catat pemasukan / alokasi kerja ke rekening proyek penerima
     const borrowerIncome: Transaction = {
       id: generateId(),
-      date: Date.now(),
+      date,
+      createdAt: Date.now(),
       description: `Penerimaan Talangan: dari ${fromProjectName} (${description})`,
       type: "INCOME",
       amount,
       projectId: toProjectId,
-      splits: {
-        rek2: account === "REK2" ? amount : 0,
-        rek3: account === "REK3" ? amount : 0,
-        rek4: account === "REK4" ? amount : 0,
-      },
+      account,
       supportId,
     };
-
     setSupports((prev) => [newSupport, ...prev]);
     setTransactions((prev) => [borrowerIncome, lenderExpense, ...prev]);
   };
 
-  const settleSupport = (supportId: string) => {
+  const settleSupport: FinanceState["settleSupport"] = (supportId, date = Date.now()) => {
     const sup = supports.find((s) => s.id === supportId);
     if (!sup || sup.status === "RETURNED") return;
-
-    // Tandai status RETURNED
     setSupports((prev) =>
-      prev.map((s) =>
-        s.id === supportId
-          ? { ...s, status: "RETURNED", returnedAt: Date.now() }
-          : s
-      )
+      prev.map((s) => (s.id === supportId ? { ...s, status: "RETURNED", returnedAt: date } : s)),
     );
-
-    // Catat pengembalian:
-    // Pengeluaran dari peminjam
-    const borrowerRepay: Transaction = {
-      id: generateId(),
-      date: Date.now(),
-      description: `Pengembalian Talangan ke ${sup.fromProjectName} (${sup.description})`,
-      type: "EXPENSE",
-      amount: sup.amount,
-      expenseAccount: sup.account || "REK2",
-      expenseCategory: "Pengembalian Talangan Proyek",
-      projectId: sup.toProjectId,
-      supportId: sup.id,
-    };
-
-    // Pemasukan kembali ke pemberi
-    const lenderReimburse: Transaction = {
-      id: generateId(),
-      date: Date.now(),
-      description: `Penerimaan Pengembalian Talangan dari ${sup.toProjectName}`,
-      type: "INCOME",
-      amount: sup.amount,
-      projectId: sup.fromProjectId,
-      splits: {
-        rek2: (sup.account || "REK2") === "REK2" ? sup.amount : 0,
-        rek3: sup.account === "REK3" ? sup.amount : 0,
-        rek4: sup.account === "REK4" ? sup.amount : 0,
-      },
-      supportId: sup.id,
-    };
-
-    setTransactions((prev) => [lenderReimburse, borrowerRepay, ...prev]);
+    setTransactions((prev) => [...settleSupportTx(sup, date), ...prev]);
   };
 
-  const deleteSupport = (supportId: string) => {
+  const deleteSupport: FinanceState["deleteSupport"] = (supportId) => {
     setSupports((prev) => prev.filter((s) => s.id !== supportId));
     setTransactions((prev) => prev.filter((t) => t.supportId !== supportId));
   };
 
-  const adjustBalance = (account: RekeningType, newBalance: number) => {
-    // calculate current balance
-    const currentIn = transactions
-      .filter((t) => t.type === "INCOME")
-      .reduce((acc, t) => {
-        if (account === "REK1") return acc + t.amount;
-        return (
-          acc +
-          (t.splits?.[account.toLowerCase() as "rek2" | "rek3" | "rek4"] || 0)
-        );
-      }, 0);
-    const currentOut = transactions
-      .filter((t) => t.type === "EXPENSE" && t.expenseAccount === account)
-      .reduce((acc, t) => acc + t.amount, 0);
-    const currentBalance = currentIn - currentOut;
+  // ---------- Rekonsiliasi saldo ----------
 
-    const diff = newBalance - currentBalance;
+  const adjustBalance: FinanceState["adjustBalance"] = (account, newBalance) => {
+    const current = computeBalances(transactions)[account];
+    const diff = Math.round(newBalance - current);
     if (diff === 0) return;
-
-    if (diff > 0) {
-      const newTransaction: Transaction = {
-        id: generateId(),
-        date: Date.now(),
-        description: `Penyesuaian Saldo Manual (${account})`,
-        type: "INCOME",
-        amount: diff,
-        incomeType: "DP_60",
-        splits: {
-          rek2: account === "REK2" ? diff : 0,
-          rek3: account === "REK3" ? diff : 0,
-          rek4: account === "REK4" ? diff : 0,
-        },
-      };
-      setTransactions((prev) => [newTransaction, ...prev]);
-    } else {
-      const newTransaction: Transaction = {
-        id: generateId(),
-        date: Date.now(),
-        description: `Penyesuaian Saldo Manual (${account})`,
-        type: "EXPENSE",
-        amount: Math.abs(diff),
-        expenseAccount: account,
-        expenseCategory: "Penyesuaian Manual",
-      };
-      setTransactions((prev) => [newTransaction, ...prev]);
-    }
+    const base = {
+      id: generateId(),
+      date: Date.now(),
+      createdAt: Date.now(),
+      description: `Penyesuaian Saldo Manual (${account})`,
+      amount: Math.abs(diff),
+      isAdjustment: true,
+    };
+    const tx: Transaction =
+      diff > 0
+        ? { ...base, type: "INCOME", account }
+        : { ...base, type: "EXPENSE", expenseAccount: account, expenseCategory: "Penyesuaian Manual" };
+    setTransactions((prev) => [tx, ...prev]);
   };
 
-  const deleteTransaction = (id: string) => {
-    setTransactions((prev) => prev.filter((t) => t.id !== id));
+  // ---------- Edit / hapus transaksi ----------
+
+  const deleteTransaction: FinanceState["deleteTransaction"] = (id) => {
+    // Menghapus uang masuk juga menghapus transfer alokasinya
+    setTransactions((prev) => prev.filter((t) => t.id !== id && t.parentId !== id));
   };
 
-  const updateTransaction = (id: string, data: Partial<Transaction>) => {
-    setTransactions((prev) =>
-      prev.map((t) => {
-        if (t.id === id) {
-          let newT = { ...t, ...data };
-          if (data.amount && t.type === "INCOME" && t.incomeType) {
-            if (t.incomeType === "DP_60") {
-              // 53% Rek 2, 7% Rek 3 (Ratio 53/60 and 7/60 of received DP)
-              newT.splits = {
-                rek2: (data.amount * 53) / 60,
-                rek3: (data.amount * 7) / 60,
-                rek4: 0,
-              };
-            } else if (t.incomeType === "PELUNASAN_40") {
-              // 20% Rek 3, 20% Rek 4 (50% each of received 40%)
-              newT.splits = {
-                rek2: 0,
-                rek3: data.amount * 0.5,
-                rek4: data.amount * 0.5,
-              };
-            }
-          }
-          return newT;
+  const updateTransaction: FinanceState["updateTransaction"] = (id, data) => {
+    setTransactions((prev) => {
+      const orig = prev.find((t) => t.id === id);
+      if (!orig) return prev;
+      const amountChanged =
+        data.amount !== undefined && data.amount !== orig.amount && orig.amount > 0;
+      const ratio = amountChanged ? (data.amount as number) / orig.amount : 1;
+      return prev.map((t) => {
+        if (t.id === id) return { ...t, ...data };
+        // Transfer alokasi ikut menyesuaikan (proporsional) & ikut tanggal induknya
+        if (t.parentId === id) {
+          return {
+            ...t,
+            amount: amountChanged ? Math.round(t.amount * ratio) : t.amount,
+            date: data.date ?? t.date,
+          };
         }
         return t;
-      })
-    );
+      });
+    });
   };
 
-  // Calculate Balances
-  const rek1In = transactions
-    .filter((t) => t.type === "INCOME" && !t.supportId)
-    .reduce((acc, t) => acc + t.amount, 0);
-  const rek1Out = transactions
-    .filter((t) => t.type === "EXPENSE" && t.expenseAccount === "REK1")
-    .reduce((acc, t) => acc + t.amount, 0);
+  // ---------- Backup ----------
 
-  const rek2In = transactions
-    .filter((t) => t.type === "INCOME")
-    .reduce((acc, t) => acc + (t.splits?.rek2 || 0), 0);
-  const rek2Out = transactions
-    .filter((t) => t.type === "EXPENSE" && t.expenseAccount === "REK2")
-    .reduce((acc, t) => acc + t.amount, 0);
+  const exportData = (): BackupData => ({
+    app: "seven-interior-finance",
+    version: 2,
+    exportedAt: Date.now(),
+    projects,
+    transactions,
+    supports,
+  });
 
-  const rek3In = transactions
-    .filter((t) => t.type === "INCOME")
-    .reduce((acc, t) => acc + (t.splits?.rek3 || 0), 0);
-  const rek3Out = transactions
-    .filter((t) => t.type === "EXPENSE" && t.expenseAccount === "REK3")
-    .reduce((acc, t) => acc + t.amount, 0);
+  const importData: FinanceState["importData"] = (data) => {
+    const d = data as Partial<BackupData>;
+    if (!d || !Array.isArray(d.projects) || !Array.isArray(d.transactions)) {
+      return { ok: false, message: "File backup tidak valid." };
+    }
+    const tx = needsMigration(d.transactions) ? migrateTransactions(d.transactions) : d.transactions;
+    setProjects(d.projects);
+    setTransactions(tx);
+    setSupports(Array.isArray(d.supports) ? d.supports : []);
+    return {
+      ok: true,
+      message: `Berhasil memulihkan ${d.projects.length} proyek dan ${tx.length} transaksi.`,
+    };
+  };
 
-  const rek4In = transactions
-    .filter((t) => t.type === "INCOME")
-    .reduce((acc, t) => acc + (t.splits?.rek4 || 0), 0);
-  const rek4Out = transactions
-    .filter((t) => t.type === "EXPENSE" && t.expenseAccount === "REK4")
-    .reduce((acc, t) => acc + t.amount, 0);
+  // ---------- Perhitungan ----------
 
-  const totalOmset = transactions
-    .filter((t) => t.type === "INCOME" && !t.supportId && !t.description.includes("Penyesuaian Saldo"))
-    .reduce((acc, t) => acc + t.amount, 0);
-
-  // Opex collected this month (Rek 3 in)
-  const currentMonth = new Date().getMonth();
-  const currentYear = new Date().getFullYear();
-  const opexCollectedThisMonth = transactions
-    .filter((t) => {
-      if (t.type !== "INCOME") return false;
-      const d = new Date(t.date);
-      return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
-    })
-    .reduce((acc, t) => acc + (t.splits?.rek3 || 0), 0);
-
-  // Total Piutang Pelunasan (40% dari proyek ongoing)
-  const totalPiutangPelunasan = projects
-    .filter((p) => p.status === "ONGOING")
-    .reduce((sum, p) => sum + p.totalValue * 0.4, 0);
-
-  // Total Outstanding Support (Talangan pending)
-  const totalOutstandingSupport = supports
-    .filter((s) => s.status === "OUTSTANDING")
-    .reduce((sum, s) => sum + s.amount, 0);
-
-  // Filtered transactions for the current period
-  const filteredTransactions = useMemo(() => {
-    const now = new Date();
-    return transactions.filter((t) => {
-      const d = new Date(t.date);
+  const isInPeriod = useMemo(() => {
+    return (ts: number) => {
+      const now = new Date();
+      const d = new Date(ts);
       if (filterPeriod === "7_DAYS") {
-        const diffDays = (now.getTime() - d.getTime()) / (1000 * 3600 * 24);
-        return diffDays <= 7;
+        return (now.getTime() - d.getTime()) / (1000 * 3600 * 24) <= 7;
       } else if (filterPeriod === "THIS_MONTH") {
-        return (
-          d.getMonth() === now.getMonth() &&
-          d.getFullYear() === now.getFullYear()
-        );
+        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
       } else if (filterPeriod === "6_MONTHS") {
-        const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-        return d >= sixMonthsAgo;
+        return d >= new Date(now.getFullYear(), now.getMonth() - 5, 1);
       } else if (filterPeriod === "THIS_YEAR") {
         return d.getFullYear() === now.getFullYear();
       }
       return true;
+    };
+  }, [filterPeriod]);
+
+  const sortedTransactions = useMemo(
+    () => [...transactions].sort((a, b) => b.date - a.date || (b.createdAt || 0) - (a.createdAt || 0)),
+    [transactions],
+  );
+
+  const filteredTransactions = useMemo(
+    () => sortedTransactions.filter((t) => isInPeriod(t.date)),
+    [sortedTransactions, isInPeriod],
+  );
+
+  const activeProjects = useMemo(() => projects.filter((p) => !p.archived), [projects]);
+
+  const balances = useMemo(() => {
+    const b = computeBalances(transactions);
+    const now = new Date();
+    const thisMonth = transactions.filter((t) => {
+      const d = new Date(t.date);
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
     });
-  }, [transactions, filterPeriod]);
+    return {
+      rek1: b.REK1,
+      rek2: b.REK2,
+      rek3: b.REK3,
+      rek4: b.REK4,
+      totalOmset: transactions.filter(isRealIncome).reduce((s, t) => s + t.amount, 0),
+      opexCollectedThisMonth: inflowTo(thisMonth, "REK3"),
+      totalPiutangPelunasan: activeProjects.reduce(
+        (s, p) => s + summarizeProject(p, transactions).outstanding,
+        0,
+      ),
+      totalOutstandingSupport: supports
+        .filter((s) => s.status === "OUTSTANDING")
+        .reduce((sum, s) => sum + s.amount, 0),
+    };
+  }, [transactions, supports, activeProjects]);
 
-  const filteredBalances = useMemo(() => {
-    const totalOmset = filteredTransactions
-      .filter((t) => t.type === "INCOME" && !t.supportId && !t.description.includes("Penyesuaian Saldo"))
-      .reduce((acc, t) => acc + t.amount, 0);
-    const opexCollected = filteredTransactions
-      .filter((t) => t.type === "INCOME")
-      .reduce((acc, t) => acc + (t.splits?.rek3 || 0), 0);
-    return { totalOmset, opexCollected };
-  }, [filteredTransactions]);
-
-  const balances = {
-    rek1: rek1In - rek1Out,
-    rek2: rek2In - rek2Out,
-    rek3: rek3In - rek3Out,
-    rek4: rek4In - rek4Out,
-    totalOmset,
-    opexCollectedThisMonth,
-    totalPiutangPelunasan,
-    totalOutstandingSupport,
-  };
+  const filteredBalances = useMemo(
+    () => ({
+      totalOmset: filteredTransactions.filter(isRealIncome).reduce((s, t) => s + t.amount, 0),
+      opexCollected: inflowTo(filteredTransactions, "REK3"),
+    }),
+    [filteredTransactions],
+  );
 
   return (
     <FinanceContext.Provider
       value={{
         projects,
-        transactions,
+        activeProjects,
+        transactions: sortedTransactions,
         filteredTransactions,
         supports,
         filterPeriod,
         setFilterPeriod,
+        isInPeriod,
         targetScenario,
         setTargetScenario,
         addProject,
-        payPelunasan,
+        updateProject,
+        receivePayment,
+        completeProject,
+        reopenProject,
+        archiveProject,
         deleteProject,
         addExpense,
+        addTransfer,
         addSupport,
         settleSupport,
         deleteSupport,
@@ -549,6 +587,10 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         deleteTransaction,
         updateTransaction,
         adjustBalance,
+        needsReconcile,
+        dismissReconcile,
+        exportData,
+        importData,
       }}
     >
       {children}
