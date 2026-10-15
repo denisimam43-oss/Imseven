@@ -62,11 +62,47 @@ export function inflowTo(transactions: Transaction[], account: RekeningType): nu
 // ---------- Alokasi SOP ----------
 
 /**
- * Menghitung pembagian uang masuk ke Rek 2/3/4 berdasarkan posisi kumulatif
- * pembayaran terhadap nilai kontrak. Hasilnya sama persis dengan SOP lama untuk
- * pola 60/40, tetapi tetap benar untuk DP 50%, cicilan 3 termin, dst.
+ * Mode alokasi uang masuk:
+ * - "PROPORSIONAL": SETIAP pembayaran (DP, termin, pelunasan) langsung dibagi
+ *   53% Rek 2 (HPP) / 27% Rek 3 (OpEx) / 20% Rek 4 (Profit).
+ * - "BERTAHAP": 60% pertama kontrak -> Rek 2 & Rek 3, 40% sisanya -> Rek 3 & Rek 4.
+ * Ganti nilai di bawah untuk berpindah mode. Total akhir per proyek sama saja.
  */
+export const ALLOCATION_MODE: "PROPORSIONAL" | "BERTAHAP" = "PROPORSIONAL";
+
+export const PROPORTIONAL_SHARES = { REK2: 0.53, REK3: 0.27, REK4: 0.2 };
+
+function roundSplit(
+  raw: Record<"REK2" | "REK3" | "REK4", number>,
+  amount: number,
+): Record<"REK2" | "REK3" | "REK4", number> {
+  const r = { REK2: Math.round(raw.REK2), REK3: Math.round(raw.REK3), REK4: Math.round(raw.REK4) };
+  const diff = Math.round(amount) - (r.REK2 + r.REK3 + r.REK4);
+  if (diff !== 0) {
+    if (r.REK4 > 0) r.REK4 += diff;
+    else r.REK2 += diff;
+  }
+  return r;
+}
+
 export function computeSopAllocation(
+  contractValue: number,
+  alreadyReceived: number,
+  amount: number,
+): Record<"REK2" | "REK3" | "REK4", number> {
+  if (ALLOCATION_MODE === "PROPORSIONAL") {
+    if (amount <= 0) return { REK2: 0, REK3: 0, REK4: 0 };
+    const p = PROPORTIONAL_SHARES;
+    return roundSplit({ REK2: amount * p.REK2, REK3: amount * p.REK3, REK4: amount * p.REK4 }, amount);
+  }
+  return computeStagedAllocation(contractValue, alreadyReceived, amount);
+}
+
+/**
+ * Mode BERTAHAP: pembagian berdasarkan posisi kumulatif pembayaran terhadap
+ * nilai kontrak (sama dengan SOP lama untuk pola 60/40).
+ */
+export function computeStagedAllocation(
   contractValue: number,
   alreadyReceived: number,
   amount: number,
@@ -95,14 +131,7 @@ export function computeSopAllocation(
   const over = Math.max(0, end - Math.max(start, contractValue));
   out.REK4 += over;
 
-  // Bulatkan ke rupiah, sisa pembulatan masuk Rek 2/Rek 4 agar total tetap sama
-  const r = { REK2: Math.round(out.REK2), REK3: Math.round(out.REK3), REK4: Math.round(out.REK4) };
-  const diff = Math.round(amount) - (r.REK2 + r.REK3 + r.REK4);
-  if (diff !== 0) {
-    if (r.REK4 > 0) r.REK4 += diff;
-    else r.REK2 += diff;
-  }
-  return r;
+  return roundSplit(out, amount);
 }
 
 /** Membuat transaksi TRANSFER Rek 1 -> Rek 2/3/4 untuk satu uang masuk. */
