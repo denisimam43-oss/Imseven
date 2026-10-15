@@ -1,286 +1,380 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useFinance } from "../store/FinanceContext";
-import { RekeningType } from "../types";
-import { formatRupiah } from "../utils";
-import { ShieldAlert, ArrowLeftRight, CheckCircle2 } from "lucide-react";
+import { IncomeType, RekeningType, REKENING_LABEL } from "../types";
+import { formatRupiah, fromDateInput, toDateInput } from "../utils";
+import { computeSopAllocation, isRealIncome, outstandingSupportFor } from "../finance";
+
+export type ModalType =
+  | "NEW_PROJECT"
+  | "NEW_PAYMENT"
+  | "NEW_EXPENSE"
+  | "NEW_TRANSFER"
+  | "NEW_SUPPORT"
+  | "CHANGE_PASSWORD";
+
+const inputCls =
+  "w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800";
+const labelCls = "block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider";
+
+function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
+  return (
+    <div>
+      <label className={labelCls}>{label}</label>
+      {children}
+      {hint && <p className="text-[10px] text-slate-400 mt-1">{hint}</p>}
+    </div>
+  );
+}
+
+function AllocationPreview({ split }: { split: Record<"REK2" | "REK3" | "REK4", number> }) {
+  return (
+    <div className="pl-3 text-[11px] text-slate-600 space-y-0.5">
+      {(["REK2", "REK3", "REK4"] as const).map((k) =>
+        split[k] > 0 ? (
+          <div key={k} className="flex justify-between">
+            <span>• {REKENING_LABEL[k]}</span>
+            <span className="font-mono">{formatRupiah(split[k])}</span>
+          </div>
+        ) : null,
+      )}
+    </div>
+  );
+}
+
+const parseNum = (v: string) => Number(String(v).replace(/\D/g, "")) || 0;
 
 export function Modals({
   activeModal,
   close,
+  initialProjectId,
 }: {
-  activeModal:
-    | "NEW_PROJECT"
-    | "NEW_EXPENSE"
-    | "NEW_SUPPORT"
-    | "CHANGE_PASSWORD"
-    | null;
+  activeModal: ModalType | null;
   close: () => void;
+  initialProjectId?: string;
 }) {
-  const { addProject, addExpense, addSupport, projects } = useFinance();
+  if (!activeModal) return null;
+  // key -> form selalu mulai bersih setiap kali modal dibuka
+  return (
+    <React.Fragment key={activeModal + (initialProjectId || "")}>
+      <ModalBody activeModal={activeModal} close={close} initialProjectId={initialProjectId} />
+    </React.Fragment>
+  );
+}
+
+function ModalBody({
+  activeModal,
+  close,
+  initialProjectId,
+}: {
+  activeModal: ModalType;
+  close: () => void;
+  initialProjectId?: string;
+}) {
+  const {
+    addProject,
+    addExpense,
+    addSupport,
+    addTransfer,
+    receivePayment,
+    activeProjects,
+    transactions,
+    supports,
+  } = useFinance();
+
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [notes, setNotes] = useState("");
+  const [date, setDate] = useState(toDateInput());
   const [account, setAccount] = useState<RekeningType>("REK2");
+  const [toAccount, setToAccount] = useState<RekeningType>("REK2");
   const [category, setCategory] = useState("HPP - Biaya Bahan Baku");
   const [customCategory, setCustomCategory] = useState("");
-  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId || "");
 
-  // Support / Talangan fields
+  // Pembayaran
+  const [payAmount, setPayAmount] = useState("");
+  const [payType, setPayType] = useState<IncomeType>("DP");
+  const [allocate, setAllocate] = useState(true);
+  const [withDp, setWithDp] = useState(true);
+  const [settleSupports, setSettleSupports] = useState(true);
+
+  // Talangan
   const [fromProjectId, setFromProjectId] = useState("");
   const [toProjectId, setToProjectId] = useState("");
-  const [supportAmount, setSupportAmount] = useState("");
-  const [supportDesc, setSupportDesc] = useState("");
 
-  // Password fields
+  // Password
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
 
-  if (!activeModal) return null;
+  const contractValue = parseNum(value);
+  const payNum = parseNum(payAmount);
+  const payProject = activeProjects.find((p) => p.id === selectedProjectId);
+  const alreadyReceived = useMemo(
+    () =>
+      payProject
+        ? transactions
+            .filter((t) => t.projectId === payProject.id && isRealIncome(t))
+            .reduce((s, t) => s + t.amount, 0)
+        : 0,
+    [payProject, transactions],
+  );
+  const payProjectSupports = payProject ? outstandingSupportFor(supports, payProject.id) : [];
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const ts = fromDateInput(date);
 
     if (activeModal === "CHANGE_PASSWORD") {
-      if (password !== confirmPassword) {
-        return alert("Konfirmasi sandi baru tidak cocok.");
-      }
+      if (password.length < 6) return alert("Kata sandi minimal 6 karakter.");
+      if (password !== confirmPassword) return alert("Konfirmasi sandi baru tidak cocok.");
       localStorage.setItem("adminPassword", password);
       alert("Kata sandi berhasil diubah.");
-      close();
-      return;
+      return close();
     }
 
-    if (activeModal === "NEW_SUPPORT") {
-      const numAmt = Number(supportAmount.replace(/\D/g, ""));
-      if (!numAmt || numAmt <= 0) {
-        return alert("Nominal talangan harus lebih dari 0.");
-      }
-      if (fromProjectId === toProjectId && fromProjectId !== "") {
-        return alert("Proyek sumber dan proyek penerima tidak boleh sama.");
-      }
+    if (activeModal === "NEW_PROJECT") {
+      if (!contractValue) return alert("Nilai kontrak tidak valid.");
+      addProject(
+        name,
+        contractValue,
+        notes || undefined,
+        withDp && payNum > 0
+          ? { amount: payNum, date: ts, incomeType: "DP", allocate }
+          : undefined,
+      );
+      return close();
+    }
 
-      const fromProj = projects.find((p) => p.id === fromProjectId);
-      const toProj = projects.find((p) => p.id === toProjectId);
+    if (activeModal === "NEW_PAYMENT") {
+      if (!payProject) return alert("Pilih proyek terlebih dahulu.");
+      if (!payNum) return alert("Nominal pembayaran tidak valid.");
+      receivePayment({
+        projectId: payProject.id,
+        amount: payNum,
+        date: ts,
+        incomeType: payType,
+        allocate,
+        description: notes || undefined,
+        settleSupports: payType === "PELUNASAN" && settleSupports,
+      });
+      return close();
+    }
 
+    const num = parseNum(value);
+    if (!num) return alert("Nilai nominal tidak valid.");
+
+    if (activeModal === "NEW_EXPENSE") {
+      const finalCategory = category === "CUSTOM" ? customCategory || "Pengeluaran Lainnya" : category;
+      addExpense(account, num, name, finalCategory, selectedProjectId || undefined, ts);
+    } else if (activeModal === "NEW_TRANSFER") {
+      if (account === toAccount) return alert("Rekening asal dan tujuan tidak boleh sama.");
+      addTransfer(account, toAccount, num, name, ts);
+    } else if (activeModal === "NEW_SUPPORT") {
+      if (fromProjectId === toProjectId) return alert("Sumber dan penerima talangan tidak boleh sama.");
+      const fromProj = activeProjects.find((p) => p.id === fromProjectId);
+      const toProj = activeProjects.find((p) => p.id === toProjectId);
       const fromName = fromProj ? fromProj.name : "Operasional Kantor (Kas Perusahaan)";
       const toName = toProj ? toProj.name : "Operasional Kantor (Kas Perusahaan)";
-
       addSupport(
         fromProjectId || undefined,
         fromName,
         toProjectId || undefined,
         toName,
-        numAmt,
-        supportDesc || "Talangan modal kerja proyek",
-        "REK2"
-      );
-
-      alert(`Talangan sebesar ${formatRupiah(numAmt)} berhasil dicatat dari ${fromName} ke ${toName}.`);
-      close();
-      return;
-    }
-
-    const numValue = Number(value.replace(/\D/g, ""));
-    if (!numValue || numValue <= 0) return alert("Nilai nominal tidak valid.");
-
-    if (activeModal === "NEW_PROJECT") {
-      addProject(name, numValue, notes || undefined);
-    } else if (activeModal === "NEW_EXPENSE") {
-      let finalCategory = category;
-      if (category === "CUSTOM") {
-        finalCategory = customCategory || "Pengeluaran Lainnya";
-      }
-
-      addExpense(
-        account,
-        numValue,
-        name,
-        finalCategory,
-        selectedProjectId || undefined
+        num,
+        name || "Talangan modal kerja proyek",
+        "REK2",
+        ts,
       );
     }
-
     close();
   };
 
-  const isExpense = activeModal === "NEW_EXPENSE";
-  const numPreview = Number(value.replace(/\D/g, "")) || 0;
+  const title: Record<ModalType, [string, string]> = {
+    NEW_PROJECT: ["Input Proyek Baru", "Daftarkan kontrak. DP dicatat sesuai nominal yang benar-benar masuk."],
+    NEW_PAYMENT: ["Terima Pembayaran Klien", "Catat DP / termin / pelunasan sesuai uang yang masuk ke rekening."],
+    NEW_EXPENSE: ["Catat Pengeluaran", "Uang keluar dari rekening sesuai pos anggaran."],
+    NEW_TRANSFER: ["Transfer Antar Rekening", "Pemindahan dana antar rekening (tidak mengubah total kas)."],
+    NEW_SUPPORT: ["Catat Talangan / Subsidi Silang", "Pinjaman modal kerja antar proyek yang wajib dikembalikan."],
+    CHANGE_PASSWORD: ["Ubah Kata Sandi Admin", "Perbarui kredensial akses dashboard finance."],
+  };
+  const submitLabel: Record<ModalType, string> = {
+    NEW_PROJECT: "Simpan Proyek",
+    NEW_PAYMENT: "Catat Pembayaran",
+    NEW_EXPENSE: "Catat Pengeluaran",
+    NEW_TRANSFER: "Catat Transfer",
+    NEW_SUPPORT: "Simpan Talangan",
+    CHANGE_PASSWORD: "Simpan Sandi Baru",
+  };
+
+  const dateField = (
+    <Field label="Tanggal Transaksi" hint="Isi sesuai tanggal di mutasi rekening / nota.">
+      <input type="date" required value={date} max={toDateInput()} onChange={(e) => setDate(e.target.value)} className={inputCls} />
+    </Field>
+  );
 
   return (
     <div className="fixed inset-0 bg-slate-900/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm overflow-y-auto">
       <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl border border-slate-200 overflow-hidden my-8">
         <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
           <div>
-            <h4 className="font-bold text-slate-800 text-base">
-              {activeModal === "NEW_PROJECT" && "Input Proyek Baru"}
-              {activeModal === "NEW_EXPENSE" && "Catat Pengeluaran Baru"}
-              {activeModal === "NEW_SUPPORT" && "Catat Talangan / Subsidi Silang"}
-              {activeModal === "CHANGE_PASSWORD" && "Ubah Kata Sandi Admin"}
-            </h4>
-            <p className="text-xs text-slate-500 font-medium mt-0.5">
-              {activeModal === "NEW_PROJECT" && "Pencatatan kontrak baru dengan firewall DP 60% (53% HPP & 7% Opex)."}
-              {activeModal === "NEW_EXPENSE" && "Pengurangan kas sesuai rekening & kategori pos anggaran Seven Interior."}
-              {activeModal === "NEW_SUPPORT" && "Pencatatan pinjaman modal kerja antar proyek & liabilitas pengembalian."}
-              {activeModal === "CHANGE_PASSWORD" && "Perbarui kredensial akses dashboard finance."}
-            </p>
+            <h4 className="font-bold text-slate-800 text-base">{title[activeModal][0]}</h4>
+            <p className="text-xs text-slate-500 font-medium mt-0.5">{title[activeModal][1]}</p>
           </div>
-          <button
-            type="button"
-            onClick={close}
-            className="text-slate-400 hover:text-slate-600 font-bold p-1 rounded-lg"
-          >
+          <button type="button" onClick={close} className="text-slate-400 hover:text-slate-600 font-bold p-1 rounded-lg">
             ✕
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {/* MODAL: CHANGE PASSWORD */}
           {activeModal === "CHANGE_PASSWORD" && (
             <>
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Sandi Baru
-                </label>
-                <input
-                  required
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                  placeholder="Masukkan kata sandi baru"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Konfirmasi Sandi Baru
-                </label>
-                <input
-                  required
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                  placeholder="Ulangi kata sandi baru"
-                />
-              </div>
+              <Field label="Sandi Baru">
+                <input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} placeholder="Minimal 6 karakter" />
+              </Field>
+              <Field label="Konfirmasi Sandi Baru">
+                <input required type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={inputCls} placeholder="Ulangi kata sandi baru" />
+              </Field>
             </>
           )}
 
-          {/* MODAL: NEW SUPPORT (TALANGAN / SUBSIDI SILANG) */}
-          {activeModal === "NEW_SUPPORT" && (
+          {activeModal === "NEW_PROJECT" && (
             <>
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Proyek Sumber (Pemberi Talangan)
-                </label>
-                <select
-                  value={fromProjectId}
-                  onChange={(e) => setFromProjectId(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                >
-                  <option value="">-- Operasional Kantor (Kas Umum) --</option>
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.status === "ONGOING" ? "Ongoing" : "Completed"})
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  *Dana akan dipotong dari saldo Rek 2 (HPP) proyek ini.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Proyek Tujuan (Penerima Talangan)
-                </label>
-                <select
-                  value={toProjectId}
-                  onChange={(e) => setToProjectId(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                >
-                  <option value="">-- Operasional Kantor (Kas Umum) --</option>
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} ({p.status === "ONGOING" ? "Ongoing" : "Completed"})
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  *Dana akan masuk sebagai modal kerja di Rek 2 proyek penerima.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Nominal Talangan (Rp)
-                </label>
+              <Field label="Nama Proyek / Klien">
+                <input required type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Contoh: Kitchen Set Ibu Ratna - Citraland" />
+              </Field>
+              <Field label="Total Nilai Kontrak (Rp)">
                 <input
                   required
                   type="number"
-                  value={supportAmount}
-                  onChange={(e) => setSupportAmount(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 font-mono text-sm font-medium text-slate-800"
-                  placeholder="Contoh: 15000000"
+                  value={value}
+                  onChange={(e) => {
+                    setValue(e.target.value);
+                    const v = parseNum(e.target.value);
+                    setPayAmount(v ? String(Math.round(v * 0.6)) : "");
+                  }}
+                  className={`${inputCls} font-mono`}
+                  placeholder="Contoh: 50000000"
                 />
-              </div>
+              </Field>
+              <Field label="Catatan Proyek (Opsional)">
+                <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} placeholder="Contoh: Finishing duco putih, estimasi 3 minggu" />
+              </Field>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Keperluan / Catatan Talangan
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={supportDesc}
-                  onChange={(e) => setSupportDesc(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                  placeholder="Contoh: Pembelian material HPL darurat sebelum termin cair"
-                />
-              </div>
+              <label className="flex items-center gap-2 text-xs font-bold text-slate-700 cursor-pointer">
+                <input type="checkbox" checked={withDp} onChange={(e) => setWithDp(e.target.checked)} />
+                DP sudah diterima
+              </label>
 
-              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 leading-relaxed">
-                <span className="font-bold block mb-0.5">Aturan SOP Seven Interior:</span>
-                Sistem akan mencatat transaksi ini dengan status <strong>OUTSTANDING</strong>. Saat proyek penerima menerima Pelunasan 40%, sistem akan mengingatkan untuk mengembalikan dana ini ke proyek asal.
-              </div>
+              {withDp && (
+                <>
+                  <Field label="Nominal DP yang Masuk (Rp)" hint="Otomatis 60% dari kontrak, ubah jika klien membayar berbeda.">
+                    <input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={`${inputCls} font-mono`} />
+                  </Field>
+                  {dateField}
+                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+                    <input type="checkbox" checked={allocate} onChange={(e) => setAllocate(e.target.checked)} />
+                    Langsung alokasikan dari Rek 1 ke Rek 2/3/4 sesuai SOP
+                  </label>
+                  {allocate && contractValue > 0 && payNum > 0 && (
+                    <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
+                      <div className="flex justify-between font-bold text-slate-800">
+                        <span>Alokasi DP ({((payNum / contractValue) * 100).toFixed(0)}% kontrak):</span>
+                        <span className="font-mono">{formatRupiah(payNum)}</span>
+                      </div>
+                      <AllocationPreview split={computeSopAllocation(contractValue, 0, payNum)} />
+                    </div>
+                  )}
+                </>
+              )}
             </>
           )}
 
-          {/* MODAL: NEW EXPENSE */}
-          {isExpense && (
+          {activeModal === "NEW_PAYMENT" && (
             <>
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Ambil dari Rekening
-                </label>
-                <select
-                  value={account}
-                  onChange={(e) => setAccount(e.target.value as RekeningType)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                >
-                  <option value="REK1">Rek 1 - Rek BCA (Transit / Omset)</option>
-                  <option value="REK2">Rek 2 - Lock Proyek (HPP: Bahan & Labour)</option>
-                  <option value="REK3">Rek 3 - Lock OpEx (Operasional Kantor & Kontingensi)</option>
-                  <option value="REK4">Rek 4 - Lock Profit (Utang / Dividen / Cadangan Aset)</option>
+              <Field label="Proyek">
+                <select required value={selectedProjectId} onChange={(e) => setSelectedProjectId(e.target.value)} className={inputCls}>
+                  <option value="">-- Pilih proyek --</option>
+                  {activeProjects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
                 </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Kategori Pengeluaran
-                </label>
+              </Field>
+              {payProject && (
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
+                  <div className="flex justify-between"><span className="text-slate-500">Nilai kontrak</span><span className="font-mono font-bold">{formatRupiah(payProject.totalValue)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Sudah diterima</span><span className="font-mono font-bold text-emerald-600">{formatRupiah(alreadyReceived)}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Sisa tagihan</span><span className="font-mono font-bold text-blue-600">{formatRupiah(Math.max(0, payProject.totalValue - alreadyReceived))}</span></div>
+                </div>
+              )}
+              <Field label="Jenis Pembayaran">
                 <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
+                  value={payType}
+                  onChange={(e) => {
+                    const t = e.target.value as IncomeType;
+                    setPayType(t);
+                    if (t === "PELUNASAN" && payProject) {
+                      setPayAmount(String(Math.max(0, payProject.totalValue - alreadyReceived)));
+                    }
+                  }}
+                  className={inputCls}
                 >
+                  <option value="DP">DP</option>
+                  <option value="TERMIN">Termin</option>
+                  <option value="PELUNASAN">Pelunasan</option>
+                  <option value="LAINNYA">Lainnya (pekerjaan tambah, dll.)</option>
+                </select>
+              </Field>
+              <Field label="Nominal yang Masuk (Rp)">
+                <input required type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={`${inputCls} font-mono`} placeholder="Sesuai mutasi rekening" />
+              </Field>
+              {dateField}
+              <Field label="Keterangan (Opsional)">
+                <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} placeholder="Contoh: Termin 2 setelah pemasangan kabinet atas" />
+              </Field>
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+                <input type="checkbox" checked={allocate} onChange={(e) => setAllocate(e.target.checked)} />
+                Langsung alokasikan dari Rek 1 ke Rek 2/3/4 sesuai SOP
+              </label>
+              {allocate && payProject && payNum > 0 && (
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+                  <AllocationPreview split={computeSopAllocation(payProject.totalValue, alreadyReceived, payNum)} />
+                </div>
+              )}
+              {payType === "PELUNASAN" && payProjectSupports.length > 0 && (
+                <label className="flex items-start gap-2 p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 cursor-pointer">
+                  <input type="checkbox" className="mt-0.5" checked={settleSupports} onChange={(e) => setSettleSupports(e.target.checked)} />
+                  <span>
+                    Kembalikan talangan proyek ini sekaligus (
+                    <span className="font-mono font-bold">
+                      {formatRupiah(payProjectSupports.reduce((s, x) => s + x.amount, 0))}
+                    </span>
+                    )
+                  </span>
+                </label>
+              )}
+            </>
+          )}
+
+          {activeModal === "NEW_EXPENSE" && (
+            <>
+              <Field label="Ambil dari Rekening">
+                <select value={account} onChange={(e) => setAccount(e.target.value as RekeningType)} className={inputCls}>
+                  {(Object.keys(REKENING_LABEL) as RekeningType[]).map((k) => (
+                    <option key={k} value={k}>{REKENING_LABEL[k]}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Kategori Pengeluaran">
+                <select value={category} onChange={(e) => setCategory(e.target.value)} className={inputCls}>
                   <optgroup label="HPP Proyek (Lock 53%)">
                     <option value="HPP - Biaya Bahan Baku">HPP - Biaya Bahan Baku (Multipleks, HPL, Aksesoris)</option>
                     <option value="HPP - Upah Labour (Termasuk Instalasi)">HPP - Upah Labour / Tukang & Instalasi</option>
                   </optgroup>
                   <optgroup label="Biaya Operasional (Opex 7%)">
                     <option value="Opex - Biaya Operasional Kantor">Opex - Biaya Operasional Kantor (ATK, Listrik, Konsumsi)</option>
-                    <option value="Opex - Biaya Kontingensi (Overhead, Tak Terduga, Revisi)">Opex - Biaya Kontingensi (Overhead 2%, Tak Terduga, Revisi)</option>
+                    <option value="Opex - Biaya Kontingensi (Overhead, Tak Terduga, Revisi)">Opex - Biaya Kontingensi (Overhead, Tak Terduga, Revisi)</option>
                     <option value="Opex - Biaya Transportasi (Oli, Ban, Pajak, Survey)">Opex - Biaya Transportasi (Bensin, Tol, Oli, Survey)</option>
                     <option value="Opex - Prive (Kunci Opex 1-2%)">Opex - Prive (Kunci Opex 2%)</option>
                   </optgroup>
@@ -295,174 +389,93 @@ export function Modals({
                     <option value="CUSTOM">Lainnya (Tulis Kategori Manual)</option>
                   </optgroup>
                 </select>
-              </div>
-
+              </Field>
               {category === "CUSTOM" && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                    Nama Kategori Baru
-                  </label>
-                  <input
-                    required
-                    type="text"
-                    value={customCategory}
-                    onChange={(e) => setCustomCategory(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                    placeholder="Contoh: Pemeliharaan Mesin Workshop"
-                  />
-                </div>
+                <Field label="Nama Kategori Baru">
+                  <input required type="text" value={customCategory} onChange={(e) => setCustomCategory(e.target.value)} className={inputCls} placeholder="Contoh: Pemeliharaan Mesin Workshop" />
+                </Field>
               )}
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Tautkan ke Proyek (Opsional)
-                </label>
-                <select
-                  value={selectedProjectId}
-                  onChange={(e) => setSelectedProjectId(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                >
+              <Field label="Tautkan ke Proyek" hint={category.startsWith("HPP") ? "Biaya HPP sebaiknya selalu ditautkan ke proyek agar laba proyek akurat." : undefined}>
+                <select value={selectedProjectId} onChange={(e) => setSelectedProjectId(e.target.value)} className={inputCls}>
                   <option value="">-- Pengeluaran Umum (Tanpa Proyek) --</option>
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
+                  {activeProjects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
                   ))}
                 </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Deskripsi / Keterangan Pengeluaran
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                  placeholder="Contoh: Beli Multipleks 18mm 15 Lembar"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Nominal Pengeluaran (Rp)
-                </label>
-                <input
-                  required
-                  type="number"
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 font-mono text-sm font-medium text-slate-800"
-                  placeholder="Contoh: 3500000"
-                />
-              </div>
+              </Field>
+              <Field label="Deskripsi / Keterangan">
+                <input required type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Contoh: Beli Multipleks 18mm 15 Lembar" />
+              </Field>
+              <Field label="Nominal Pengeluaran (Rp)">
+                <input required type="number" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputCls} font-mono`} placeholder="Contoh: 3500000" />
+              </Field>
+              {dateField}
             </>
           )}
 
-          {/* MODAL: NEW PROJECT */}
-          {activeModal === "NEW_PROJECT" && (
+          {activeModal === "NEW_TRANSFER" && (
             <>
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Nama Proyek / Klien
-                </label>
-                <input
-                  required
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                  placeholder="Contoh: Kitchen Set Ibu Ratna - Citraland"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Dari">
+                  <select value={account} onChange={(e) => setAccount(e.target.value as RekeningType)} className={inputCls}>
+                    {(Object.keys(REKENING_LABEL) as RekeningType[]).map((k) => (
+                      <option key={k} value={k}>{k}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label="Ke">
+                  <select value={toAccount} onChange={(e) => setToAccount(e.target.value as RekeningType)} className={inputCls}>
+                    {(Object.keys(REKENING_LABEL) as RekeningType[]).map((k) => (
+                      <option key={k} value={k}>{k}</option>
+                    ))}
+                  </select>
+                </Field>
               </div>
+              <Field label="Nominal (Rp)">
+                <input required type="number" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputCls} font-mono`} />
+              </Field>
+              <Field label="Keterangan (Opsional)">
+                <input type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Contoh: Alokasi manual DP proyek X" />
+              </Field>
+              {dateField}
+            </>
+          )}
 
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Total Nilai Kontrak (Rp)
-                </label>
-                <input
-                  required
-                  type="number"
-                  value={value}
-                  onChange={(e) => setValue(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 font-mono text-sm font-medium text-slate-800"
-                  placeholder="Contoh: 50000000"
-                />
+          {activeModal === "NEW_SUPPORT" && (
+            <>
+              <Field label="Sumber (Pemberi Talangan)">
+                <select value={fromProjectId} onChange={(e) => setFromProjectId(e.target.value)} className={inputCls}>
+                  <option value="">-- Operasional Kantor (Kas Umum) --</option>
+                  {activeProjects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Penerima Talangan">
+                <select value={toProjectId} onChange={(e) => setToProjectId(e.target.value)} className={inputCls}>
+                  <option value="">-- Operasional Kantor (Kas Umum) --</option>
+                  {activeProjects.map((p) => (
+                    <option key={p.id} value={p.id}>{p.name}</option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Nominal Talangan (Rp)">
+                <input required type="number" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputCls} font-mono`} placeholder="Contoh: 15000000" />
+              </Field>
+              <Field label="Keperluan">
+                <input required type="text" value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Contoh: Beli HPL darurat sebelum termin cair" />
+              </Field>
+              {dateField}
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 leading-relaxed">
+                Talangan dicatat <strong>OUTSTANDING</strong> sampai dikembalikan. Saat pelunasan proyek penerima dicatat,
+                sistem menawarkan pengembalian otomatis.
               </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1 uppercase tracking-wider">
-                  Catatan Proyek (Opsional)
-                </label>
-                <input
-                  type="text"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800"
-                  placeholder="Contoh: Finishing duco putih, estimasi pengerjaan 3 minggu"
-                />
-              </div>
-
-              {numPreview > 0 && (
-                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-2.5">
-                  <div className="flex justify-between items-center pb-2 border-b border-slate-200">
-                    <span className="font-bold text-slate-800">
-                      Simulasi Firewall Alokasi Dana:
-                    </span>
-                    <span className="font-bold font-mono text-navy-700">
-                      {formatRupiah(numPreview)}
-                    </span>
-                  </div>
-
-                  <div className="space-y-1">
-                    <div className="flex justify-between text-emerald-700 font-semibold">
-                      <span>✓ DP 60% Diterima:</span>
-                      <span className="font-mono">{formatRupiah(numPreview * 0.6)}</span>
-                    </div>
-                    <div className="pl-3 text-[11px] text-slate-600 space-y-0.5">
-                      <div className="flex justify-between">
-                        <span>• Rek 2 (Lock HPP 53%):</span>
-                        <span className="font-mono">{formatRupiah(numPreview * 0.53)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>• Rek 3 (Lock OpEx 7%):</span>
-                        <span className="font-mono">{formatRupiah(numPreview * 0.07)}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1 pt-1.5 border-t border-slate-200">
-                    <div className="flex justify-between text-blue-700 font-semibold">
-                      <span>✓ Pelunasan 40% (Saat Selesai):</span>
-                      <span className="font-mono">{formatRupiah(numPreview * 0.4)}</span>
-                    </div>
-                    <div className="pl-3 text-[11px] text-slate-600 space-y-0.5">
-                      <div className="flex justify-between">
-                        <span>• Rek 3 (Biaya Tetap 20%):</span>
-                        <span className="font-mono">{formatRupiah(numPreview * 0.2)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>• Rek 4 (Lock Margin Profit 20%):</span>
-                        <span className="font-mono">{formatRupiah(numPreview * 0.2)}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
             </>
           )}
 
           <div className="pt-2">
-            <button
-              type="submit"
-              className="w-full bg-navy-600 hover:bg-navy-700 text-white text-xs font-bold uppercase tracking-widest py-3.5 rounded-xl transition-all shadow-sm"
-            >
-              {activeModal === "CHANGE_PASSWORD" && "Simpan Sandi Baru"}
-              {activeModal === "NEW_PROJECT" && "Simpan & Alokasikan DP 60%"}
-              {activeModal === "NEW_EXPENSE" && "Catat Pengeluaran Kas"}
-              {activeModal === "NEW_SUPPORT" && "Simpan Transaksi Talangan"}
+            <button type="submit" className="w-full bg-navy-600 hover:bg-navy-700 text-white text-xs font-bold uppercase tracking-widest py-3.5 rounded-xl transition-all shadow-sm">
+              {submitLabel[activeModal]}
             </button>
           </div>
         </form>

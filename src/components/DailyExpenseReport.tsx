@@ -1,5 +1,6 @@
 import React, { useMemo } from 'react';
 import { useFinance } from '../store/FinanceContext';
+import { isRealIncome, isRealExpense } from "../finance";
 import { formatRupiah, cn } from '../utils';
 import { format, isSameDay } from 'date-fns';
 import { id } from 'date-fns/locale';
@@ -8,7 +9,7 @@ export function DailyExpenseReport() {
   const { filteredTransactions } = useFinance();
 
   const dailyData = useMemo(() => {
-    const expenses = filteredTransactions.filter(t => t.type === 'EXPENSE');
+    const expenses = filteredTransactions.filter(t => isRealExpense(t));
     const grouped = expenses.reduce((acc, t) => {
       const dayStr = format(new Date(t.date), 'yyyy-MM-dd');
       if (!acc[dayStr]) {
