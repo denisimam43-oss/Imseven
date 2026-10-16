@@ -123,6 +123,11 @@ export function ProjectList({ onPayment }: { onPayment: (projectId: string) => v
                           ? "Serah Terima - Belum Lunas"
                           : "Selesai & Lunas"}
                     </span>
+                    {project.isDebtProject && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider border bg-rose-50 text-rose-700 border-rose-200">
+                        Utang Project
+                      </span>
+                    )}
                     {debt > 0 && (
                       <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
                         <AlertTriangle size={11} />
