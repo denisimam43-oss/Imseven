@@ -86,21 +86,61 @@ function roundSplit(raw: Split, amount: number): Split {
 
 /**
  * Membagi satu uang masuk ke Rek 2/3/4.
- * - Proyek biasa: PROPORSIONAL (mis. 53% / 27% / 20%).
+ * - Proyek biasa: BAHAN DULU. Uang masuk (dihitung kumulatif per proyek) mengisi
+ *   seluruh kebutuhan bahan di Rek 2 lebih dulu. Setelah bahan aman, sisanya
+ *   dibagi ke labour (Rek 2), operasional (Rek 3) dan profit (Rek 4) sesuai porsi.
+ *   Total akhir per proyek tetap sama dengan porsi SOP (mis. 53 / 27 / 20).
  * - Utang project (debtNeed diisi): WATERFALL -> Rek 2 diisi dulu sampai kebutuhan
  *   proyek tertutup (labour, pengembalian talangan, sisa bahan), sisanya baru
  *   dibagi ke Rek 3 & Rek 4 dengan perbandingan porsinya.
  */
-export function computeAllocation(amount: number, shares: AllocationShares, debtNeed?: number): Split {
+export function computeAllocation(
+  amount: number,
+  shares: AllocationShares,
+  opts: { contract?: number; alreadyReceived?: number; debtNeed?: number } = {},
+): Split {
   if (amount <= 0) return { REK2: 0, REK3: 0, REK4: 0 };
   const p = accountShares(shares);
-  if (debtNeed === undefined) {
+
+  if (opts.debtNeed !== undefined) {
+    const toRek2 = Math.min(amount, Math.max(0, opts.debtNeed));
+    const rest = amount - toRek2;
+    const r34 = p.REK3 + p.REK4 || 1;
+    return roundSplit({ REK2: toRek2, REK3: (rest * p.REK3) / r34, REK4: (rest * p.REK4) / r34 }, amount);
+  }
+
+  const contract = opts.contract || 0;
+  if (contract <= 0) {
+    // Tanpa nilai kontrak: bagi proporsional biasa
     return roundSplit({ REK2: amount * p.REK2, REK3: amount * p.REK3, REK4: amount * p.REK4 }, amount);
   }
-  const toRek2 = Math.min(amount, Math.max(0, debtNeed));
-  const rest = amount - toRek2;
-  const r34 = p.REK3 + p.REK4 || 1;
-  return roundSplit({ REK2: toRek2, REK3: (rest * p.REK3) / r34, REK4: (rest * p.REK4) / r34 }, amount);
+
+  const total = shares.bahan + shares.labour + shares.ops + shares.kontingensi + shares.prive + shares.expense + shares.profit || 1;
+  const materialEnd = (contract * shares.bahan) / total; // batas tahap "bahan dulu"
+  const restTotal = total - shares.bahan || 1;
+  const fLabour = shares.labour / restTotal;
+  const fRek3 = (shares.ops + shares.kontingensi + shares.prive + shares.expense) / restTotal;
+  const fRek4 = shares.profit / restTotal;
+
+  const start = Math.max(0, opts.alreadyReceived || 0);
+  const end = start + amount;
+  const out = { REK2: 0, REK3: 0, REK4: 0 };
+
+  // Tahap 1: isi kebutuhan bahan
+  const s1 = Math.max(0, Math.min(end, materialEnd) - Math.min(start, materialEnd));
+  out.REK2 += s1;
+  // Tahap 2: sisa kontrak dibagi labour / operasional / profit
+  const s2 = Math.max(0, Math.min(end, contract) - Math.max(start, materialEnd));
+  out.REK2 += s2 * fLabour;
+  out.REK3 += s2 * fRek3;
+  out.REK4 += s2 * fRek4;
+  // Kelebihan di atas kontrak (pekerjaan tambah): proporsional biasa
+  const over = Math.max(0, end - Math.max(start, contract));
+  out.REK2 += over * p.REK2;
+  out.REK3 += over * p.REK3;
+  out.REK4 += over * p.REK4;
+
+  return roundSplit(out, amount);
 }
 
 /** Membuat transaksi TRANSFER Rek 1 -> Rek 2/3/4 untuk satu uang masuk. */

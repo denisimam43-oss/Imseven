@@ -391,7 +391,7 @@ function ModalBody({
                   {dateField}
                   <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
                     <input type="checkbox" checked={allocate} onChange={(e) => setAllocate(e.target.checked)} />
-                    Langsung alokasikan dari Rek 1 ke Rek 2/3/4 sesuai SOP
+                    Langsung alokasikan ke Rek 2/3/4 (bahan diamankan dulu)
                   </label>
                   {allocate && contractValue > 0 && payNum > 0 && (
                     <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
@@ -399,7 +399,7 @@ function ModalBody({
                         <span>Alokasi DP ({((payNum / contractValue) * 100).toFixed(0)}% kontrak):</span>
                         <span className="font-mono">{formatRupiah(payNum)}</span>
                       </div>
-                      <AllocationPreview split={computeAllocation(payNum, shares)} />
+                      <AllocationPreview split={computeAllocation(payNum, shares, { contract: contractValue })} />
                     </div>
                   )}
                 </>
@@ -453,7 +453,7 @@ function ModalBody({
               </Field>
               <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
                 <input type="checkbox" checked={allocate} onChange={(e) => setAllocate(e.target.checked)} />
-                Langsung alokasikan dari Rek 1 ke Rek 2/3/4 sesuai SOP
+                Langsung alokasikan ke Rek 2/3/4 (bahan diamankan dulu)
               </label>
               {allocate && payProject && payNum > 0 && (
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1.5">
@@ -464,7 +464,7 @@ function ModalBody({
                       bahan), baru sisanya ke Rek 3 & Rek 4.
                     </p>
                   )}
-                  <AllocationPreview split={computeAllocation(payNum, shares, payAnalysis?.need)} />
+                  <AllocationPreview split={computeAllocation(payNum, shares, { contract: payProject.totalValue, alreadyReceived, debtNeed: payAnalysis?.need })} />
                 </div>
               )}
               {payType === "PELUNASAN" && payProjectSupports.length > 0 && (

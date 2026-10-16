@@ -258,7 +258,14 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     const debtNeed = project.isDebtProject
       ? analyzeProject(project, existing, supports, settings.shares).need
       : undefined;
-    const split = computeAllocation(input.amount, settings.shares, debtNeed);
+    const alreadyReceived = existing
+      .filter((t) => t.projectId === project.id && isRealIncome(t))
+      .reduce((sum, t) => sum + t.amount, 0);
+    const split = computeAllocation(input.amount, settings.shares, {
+      contract: project.totalValue,
+      alreadyReceived,
+      debtNeed,
+    });
     return [income, ...buildAllocationTransfers(income, split, project.name)];
   };
 
