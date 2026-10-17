@@ -31,6 +31,7 @@ export function isHpp(t: Transaction): boolean {
 
 /** Efek satu transaksi terhadap saldo tiap rekening. */
 export function accountEffects(t: Transaction): Partial<Record<RekeningType, number>> {
+  if (t.pending) return {}; // arahan transfer yang belum dikerjakan
   if (t.type === "INCOME") return { [t.account || "REK1"]: t.amount };
   if (t.type === "EXPENSE") return { [t.expenseAccount || "REK1"]: -t.amount };
   if (t.type === "TRANSFER" && t.fromAccount && t.toAccount) {
@@ -148,6 +149,7 @@ export function buildAllocationTransfers(
   income: Transaction,
   split: Split,
   projectName?: string,
+  pending = false,
 ): Transaction[] {
   const from = income.account || "REK1";
   return (Object.keys(split) as ("REK2" | "REK3" | "REK4")[])
@@ -163,6 +165,7 @@ export function buildAllocationTransfers(
       toAccount: k,
       projectId: income.projectId,
       parentId: income.id,
+      pending: pending || undefined,
     }));
 }
 
@@ -205,12 +208,18 @@ export function summarizeProject(project: Project, transactions: Transaction[]):
 
 // ---------- Laporan laba rugi & posisi keuangan ----------
 
+/** Pengambilan pemilik (prive, dividen) bukan beban usaha. */
+export const isOwnerWithdrawal = (t: Transaction) =>
+  !!t.expenseCategory && (t.expenseCategory.includes("Prive") || t.expenseCategory.startsWith("Profit"));
+
 export interface ProfitLoss {
   revenue: number; // nilai kontrak proyek yang serah terima di periode
   projectCost: number; // seluruh biaya proyek-proyek tsb (kapan pun dikeluarkan)
   grossProfit: number;
-  opex: number; // biaya non-proyek di periode
+  opex: number; // biaya non-proyek di periode (tanpa prive/dividen)
   netProfit: number;
+  ownerDraw: number; // prive & pengambilan profit oleh pemilik di periode
+  retained: number; // laba bersih - pengambilan pemilik
   completedCount: number;
 }
 
@@ -227,9 +236,11 @@ export function computeProfitLoss(
   const projectCost = allTransactions
     .filter((t) => isRealExpense(t) && t.projectId && ids.has(t.projectId))
     .reduce((s, t) => s + t.amount, 0);
-  // Biaya non-proyek, tidak termasuk pemindahan modal (pajak/prive dicatat sebagai beban)
-  const opex = allTransactions
-    .filter((t) => isRealExpense(t) && !t.projectId && inPeriod(t.date))
+  // Biaya non-proyek. Prive & dividen adalah pengambilan pemilik, bukan beban.
+  const periodExp = allTransactions.filter((t) => isRealExpense(t) && !t.projectId && inPeriod(t.date));
+  const opex = periodExp.filter((t) => !isOwnerWithdrawal(t)).reduce((s, t) => s + t.amount, 0);
+  const ownerDraw = allTransactions
+    .filter((t) => isRealExpense(t) && isOwnerWithdrawal(t) && inPeriod(t.date))
     .reduce((s, t) => s + t.amount, 0);
   const grossProfit = revenue - projectCost;
   return {
@@ -238,6 +249,8 @@ export function computeProfitLoss(
     grossProfit,
     opex,
     netProfit: grossProfit - opex,
+    ownerDraw,
+    retained: grossProfit - opex - ownerDraw,
     completedCount: completed.length,
   };
 }
@@ -467,10 +480,14 @@ export function summarizeDebt(
 export interface MarketTarget {
   fixedNeed: number; // expense + operasional kantor per bulan
   coverPct: number; // porsi omset yang menutup biaya tetap (expense + ops)
-  baseTarget: number; // omset/bulan untuk menutup biaya tetap
+  baseTarget: number; // titik impas: omset untuk menutup biaya tetap
   monthlyRecovery: number; // cicilan lubang utang project per bulan
   recoveryTarget: number; // tambahan omset untuk cicilan itu (dari porsi profit)
-  totalTarget: number;
+  minimumTarget: number; // impas + cicilan lubang
+  capacityTarget: number; // target periode dari kapasitas slot & hari kerja
+  capacitySlots: number;
+  totalTarget: number; // target yang dikejar = target kapasitas
+  belowMinimum: boolean; // kapasitas periode ini di bawah kebutuhan minimum
   avgProjectValue: number;
   projectsNeeded: number;
 }
@@ -479,6 +496,7 @@ export function computeMarketTarget(
   settings: FinanceSettings,
   totalHole: number,
   projects: Project[],
+  capacity: { slots: number; target: number },
 ): MarketTarget {
   const s = settings.shares;
   const fixedNeed = settings.monthlyExpense + settings.monthlyOffice;
@@ -486,18 +504,22 @@ export function computeMarketTarget(
   const baseTarget = coverPct > 0 ? fixedNeed / coverPct : 0;
   const monthlyRecovery = settings.recoveryMonths > 0 ? totalHole / settings.recoveryMonths : 0;
   const recoveryTarget = s.profit > 0 ? monthlyRecovery / (s.profit / 100) : 0;
-  const totalTarget = baseTarget + recoveryTarget;
+  const minimumTarget = baseTarget + recoveryTarget;
   const real = projects.filter((p) => !p.archived && p.totalValue > 0);
   const autoAvg = real.length ? real.reduce((x, p) => x + p.totalValue, 0) / real.length : 0;
-  const avgProjectValue = settings.avgProjectValue || autoAvg;
+  const avgProjectValue = settings.avgProjectValue || autoAvg || settings.slotValue;
   return {
     fixedNeed,
     coverPct,
     baseTarget,
     monthlyRecovery,
     recoveryTarget,
-    totalTarget,
+    minimumTarget,
+    capacityTarget: capacity.target,
+    capacitySlots: capacity.slots,
+    totalTarget: capacity.target,
+    belowMinimum: capacity.target < minimumTarget,
     avgProjectValue,
-    projectsNeeded: avgProjectValue > 0 ? Math.ceil(totalTarget / avgProjectValue) : 0,
+    projectsNeeded: avgProjectValue > 0 ? Math.ceil(capacity.target / avgProjectValue) : 0,
   };
 }

@@ -3,6 +3,8 @@ import { useFinance } from "../store/FinanceContext";
 import { formatRupiah, cn } from "../utils";
 import { Target, Settings2, CheckCircle, AlertCircle } from "lucide-react";
 import { accountShares, inflowTo, isRealIncome } from "../finance";
+import { inPeriod, fmtDay } from "../calendar";
+import { computePeriodRecap } from "../plan";
 
 function Line({ label, value, bold, sub }: { label: string; value: string; bold?: boolean; sub?: string }) {
   return (
@@ -25,29 +27,32 @@ function Bar({ pct, done }: { pct: number; done: boolean }) {
 }
 
 export function TargetsAndProgress() {
-  const { settings, updateSettings, marketTarget: mt, transactions, debt } = useFinance();
+  const { settings, updateSettings, marketTarget: mt, transactions, debt, projects, currentPeriod: cp } = useFinance();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
     monthlyExpense: String(settings.monthlyExpense),
     monthlyOffice: String(settings.monthlyOffice),
     avgProjectValue: String(settings.avgProjectValue || ""),
     recoveryMonths: String(settings.recoveryMonths),
+    slotValue: String(settings.slotValue),
+    slotsPerPeriod: String(settings.slotsPerPeriod),
   });
   const s = settings.shares;
 
   const month = useMemo(() => {
-    const now = new Date();
-    const tx = transactions.filter((t) => {
-      const d = new Date(t.date);
-      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-    });
+    const tx = transactions.filter((t) => inPeriod(cp, t.date));
     const cashIn = tx.filter(isRealIncome).reduce((x, t) => x + t.amount, 0);
     const rek3In = inflowTo(tx, "REK3");
     const p = accountShares(s);
     const rek3Pct = p.REK3 * 100 || 1;
     const fixedCovered = (rek3In * (s.expense + s.ops)) / rek3Pct;
     return { cashIn, fixedCovered };
-  }, [transactions, s]);
+  }, [transactions, s, cp]);
+  const recap = useMemo(
+    () => computePeriodRecap(cp, projects, transactions, settings),
+    [cp, projects, transactions, settings],
+  );
+  const dealPct = mt.totalTarget > 0 ? (recap.dealValue / mt.totalTarget) * 100 : 0;
 
   const salesPct = mt.totalTarget > 0 ? (month.cashIn / mt.totalTarget) * 100 : 0;
   const fixedPct = mt.fixedNeed > 0 ? (month.fixedCovered / mt.fixedNeed) * 100 : 0;
@@ -58,6 +63,8 @@ export function TargetsAndProgress() {
       monthlyOffice: Number(form.monthlyOffice) || 0,
       avgProjectValue: Number(form.avgProjectValue) || 0,
       recoveryMonths: Math.max(1, Number(form.recoveryMonths) || 1),
+      slotValue: Number(form.slotValue) || settings.slotValue,
+      slotsPerPeriod: Math.max(1, Number(form.slotsPerPeriod) || settings.slotsPerPeriod),
     });
     setEditing(false);
   };
@@ -70,9 +77,10 @@ export function TargetsAndProgress() {
             <Target size={20} />
           </span>
           <div>
-            <h4 className="font-bold text-slate-800">Target Pasar Bulanan</h4>
+            <h4 className="font-bold text-slate-800">Target Periode {cp.label}</h4>
             <p className="text-xs text-slate-500 font-medium">
-              Omset yang harus masuk tiap bulan untuk menutup expense, operasional kantor, dan cicilan lubang utang project.
+              Periode cut-off {fmtDay(cp.start)} – {fmtDay(cp.end)} · {cp.workdays} hari kerja · kapasitas {mt.capacitySlots} slot
+              × {formatRupiah(settings.slotValue)}.
             </p>
           </div>
         </div>
@@ -92,6 +100,8 @@ export function TargetsAndProgress() {
               ["monthlyOffice", "Operasional kantor / bulan (Rp)"],
               ["avgProjectValue", "Rata-rata nilai proyek (kosong = otomatis)"],
               ["recoveryMonths", "Target lubang lunas (bulan)"],
+              ["slotValue", "Nilai 1 slot (Rp)"],
+              ["slotsPerPeriod", "Kapasitas slot / periode penuh"],
             ] as const
           ).map(([key, label]) => (
             <label key={key}>
@@ -133,10 +143,23 @@ export function TargetsAndProgress() {
               value={formatRupiah(mt.recoveryTarget)}
             />
           )}
-          <Line label="TARGET OMSET / BULAN" value={formatRupiah(mt.totalTarget)} bold />
+          <Line label="Batas minimum (impas + cicilan lubang)" value={formatRupiah(mt.minimumTarget)} bold />
+          <Line
+            label={`TARGET PERIODE (${mt.capacitySlots} slot)`}
+            sub={`${cp.workdays} dari ${settings.baseWorkdays} hari kerja × ${settings.slotsPerPeriod} slot penuh`}
+            value={formatRupiah(mt.totalTarget)}
+            bold
+          />
+          {mt.belowMinimum && (
+            <p className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2 mt-2">
+              Kapasitas periode ini di bawah batas minimum. Tambah slot (lembur / proyek bernilai lebih besar) atau tunda
+              pengeluaran yang bisa ditunda.
+            </p>
+          )}
           {mt.avgProjectValue > 0 && (
             <p className="text-xs text-slate-600 mt-2">
-              ≈ <b>{mt.projectsNeeded} proyek</b> per bulan dengan rata-rata nilai {formatRupiah(mt.avgProjectValue)}.
+              ≈ <b>{mt.projectsNeeded} proyek</b> dengan rata-rata nilai {formatRupiah(mt.avgProjectValue)}. Deal terakhir agar
+              panen di periode ini: Reguler <b>{fmtDay(cp.dealRegulerBy)}</b>, Premium <b>{fmtDay(cp.dealPremiumBy)}</b>.
             </p>
           )}
         </div>
@@ -144,7 +167,20 @@ export function TargetsAndProgress() {
         <div className="space-y-5">
           <div>
             <div className="flex justify-between items-baseline text-xs mb-1.5">
-              <span className="font-bold text-slate-700">Uang masuk klien bulan ini</span>
+              <span className="font-bold text-slate-700">Deal baru (DP masuk) periode ini</span>
+              <span className="font-mono">
+                <b>{recap.dealSlots.toFixed(1)} slot</b> · {formatRupiah(recap.dealValue)}{" "}
+                <span className="text-slate-400">/ {formatRupiah(mt.totalTarget)}</span>
+              </span>
+            </div>
+            <Bar pct={dealPct} done={dealPct >= 100} />
+            <p className="text-[11px] mt-1.5 text-slate-500">
+              {recap.deals.length} proyek baru. Nilai kontrak dihitung penuh pada periode DP masuk.
+            </p>
+          </div>
+          <div>
+            <div className="flex justify-between items-baseline text-xs mb-1.5">
+              <span className="font-bold text-slate-700">Uang masuk klien periode ini</span>
               <span className="font-mono">
                 <b>{formatRupiah(month.cashIn)}</b> <span className="text-slate-400">/ {formatRupiah(mt.totalTarget)}</span>
               </span>
@@ -167,7 +203,7 @@ export function TargetsAndProgress() {
             </div>
             <Bar pct={fixedPct} done={fixedPct >= 100} />
             <p className="text-[11px] mt-1.5 text-slate-500">
-              Dari porsi expense + ops yang masuk Rek 3 bulan ini. Pelunasan utang project lebih banyak masuk Rek 2
+              Dari porsi expense + ops yang masuk Rek 3 periode ini. Pelunasan utang project lebih banyak masuk Rek 2
               (waterfall), jadi porsinya ke biaya tetap lebih kecil.
             </p>
           </div>

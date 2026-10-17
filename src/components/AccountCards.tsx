@@ -47,7 +47,9 @@ const CARDS: {
 ];
 
 export function AccountCards() {
-  const { balances, adjustBalance } = useFinance();
+  const { balances, adjustBalance, pendingTransfers } = useFinance();
+  const pendingNet = (k: RekeningType) =>
+    pendingTransfers.reduce((s, t) => s + (t.toAccount === k ? t.amount : 0) - (t.fromAccount === k ? t.amount : 0), 0);
   const [editing, setEditing] = useState<RekeningType | null>(null);
   const [editValue, setEditValue] = useState("");
 
@@ -124,6 +126,12 @@ export function AccountCards() {
               <p className="text-[10px] text-slate-400 mt-1">
                 {value[c.key] < 0 ? "Saldo minus: ada pengeluaran melebihi dana pos ini" : c.hint}
               </p>
+              {pendingNet(c.key) !== 0 && (
+                <p className="text-[10px] font-semibold text-indigo-600 mt-1">
+                  Arahan belum ditransfer: {pendingNet(c.key) > 0 ? "+" : "-"}
+                  {formatRupiah(Math.abs(pendingNet(c.key)))}
+                </p>
+              )}
             </div>
           </div>
         ))}

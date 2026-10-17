@@ -4,6 +4,8 @@ import { formatRupiah, cn } from "../utils";
 import { computeBalanceSheet, computeProfitLoss, summarizeProject } from "../finance";
 
 const PERIOD_LABEL: Record<string, string> = {
+  THIS_CUTOFF: "periode cut-off berjalan",
+  LAST_CUTOFF: "periode cut-off lalu",
   "7_DAYS": "7 hari terakhir",
   THIS_MONTH: "bulan ini",
   "6_MONTHS": "6 bulan terakhir",
@@ -56,6 +58,8 @@ export function ProjectReport() {
             <Row label="Laba kotor" value={pl.grossProfit} bold />
             <Row label="Biaya operasional & umum" value={pl.opex} neg hint="Pengeluaran yang tidak ditautkan ke proyek" />
             <Row label="Laba bersih" value={pl.netProfit} bold />
+            <Row label="Prive & dividen pemilik" value={pl.ownerDraw} neg hint="Pengambilan pemilik, bukan beban usaha" />
+            <Row label="Laba ditahan" value={pl.retained} bold />
           </div>
 
           <div className="p-5 rounded-xl border border-slate-200 bg-slate-50/50">

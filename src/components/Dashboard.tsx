@@ -9,6 +9,8 @@ import { DailyExpenseReport } from "./DailyExpenseReport";
 import { ProjectReport } from "./ProjectReport";
 import { ProjectSupportManager } from "./ProjectSupportManager";
 import { StrategyPanel } from "./StrategyPanel";
+import { ArahanPanel } from "./ArahanPanel";
+import { PeriodRecap } from "./PeriodRecap";
 import { Modals, ModalType } from "./Modals";
 import {
   PlusCircle,
@@ -27,6 +29,7 @@ import {
   Download,
   ShieldAlert,
   LifeBuoy,
+  BookLock,
 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
 import { FilterPeriod } from "../types";
@@ -40,7 +43,7 @@ export function Dashboard() {
     setModal(m);
   };
   const [activeTab, setActiveTab] = useState<
-    "ALL" | "OVERVIEW" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "EXPENSES"
+    "ALL" | "OVERVIEW" | "RECAP" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "EXPENSES"
   >("ALL");
 
   const {
@@ -206,8 +209,10 @@ export function Dashboard() {
               onChange={(e) => setFilterPeriod(e.target.value as FilterPeriod)}
               className="pl-8 pr-7 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-navy-300 focus:outline-none focus:ring-1 focus:ring-navy-500 appearance-none cursor-pointer uppercase tracking-wider transition-colors shadow-sm"
             >
+              <option value="THIS_CUTOFF">Periode Ini (26–25)</option>
+              <option value="LAST_CUTOFF">Periode Lalu (26–25)</option>
               <option value="7_DAYS">7 Hari Terakhir</option>
-              <option value="THIS_MONTH">Bulan Ini</option>
+              <option value="THIS_MONTH">Bulan Kalender Ini</option>
               <option value="6_MONTHS">6 Bulan Terakhir</option>
               <option value="THIS_YEAR">Tahun Ini</option>
             </select>
@@ -321,6 +326,11 @@ export function Dashboard() {
         </div>
       )}
 
+      <ArahanPanel
+        onPayment={(id) => openModal("NEW_PAYMENT", id)}
+        onRecap={() => setActiveTab("RECAP")}
+      />
+
       {/* View Tabs */}
       <div className="flex items-center gap-1.5 border-b border-slate-200 pb-3 mb-6 overflow-x-auto">
         <button
@@ -346,6 +356,18 @@ export function Dashboard() {
         >
           <LayoutDashboard size={14} />
           Ringkasan & Firewall Kas
+        </button>
+        <button
+          onClick={() => setActiveTab("RECAP")}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap",
+            activeTab === "RECAP"
+              ? "bg-slate-900 text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100"
+          )}
+        >
+          <BookLock size={14} />
+          Rekap Periode & Tutup Buku
         </button>
         <button
           onClick={() => setActiveTab("STRATEGY")}
@@ -411,6 +433,9 @@ export function Dashboard() {
           <CashFlowChart />
         </>
       )}
+
+      {/* TAB CONTENT: REKAP PERIODE */}
+      {(activeTab === "ALL" || activeTab === "RECAP") && <PeriodRecap />}
 
       {/* TAB CONTENT: STRATEGI UTANG & TARGET */}
       {(activeTab === "ALL" || activeTab === "STRATEGY") && (
