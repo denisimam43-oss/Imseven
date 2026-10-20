@@ -33,7 +33,7 @@ import {
   BookLock,
 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
-import { sendPasswordResetEmail, signOut } from "firebase/auth";
+import { signOut } from "firebase/auth";
 import { auth } from "../firebase";
 import { FilterPeriod } from "../types";
 import { formatRupiah, cn } from "../utils";
@@ -220,21 +220,14 @@ export function Dashboard() {
             <Upload size={13} className="mr-1.5" /> Pulihkan
             <input type="file" accept="application/json,.json" className="hidden" onChange={handleImport} />
           </label>
+          {!cloud.enabled && (
           <button
-            onClick={() => {
-              const email = auth?.currentUser?.email;
-              if (cloud.enabled && auth && email) {
-                sendPasswordResetEmail(auth, email)
-                  .then(() => alert(`Link ganti sandi sudah dikirim ke ${email}.`))
-                  .catch(() => alert("Gagal mengirim link ganti sandi. Coba lagi."));
-                return;
-              }
-              openModal("CHANGE_PASSWORD");
-            }}
+            onClick={() => openModal("CHANGE_PASSWORD")}
             className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-navy-300 hover:bg-slate-50 transition-colors uppercase tracking-wider shadow-sm"
           >
             Sandi
           </button>
+          )}
 
           {/* Period Filter */}
           <div className="relative group">

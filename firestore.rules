@@ -6,6 +6,7 @@ service cloud.firestore {
     function isFinanceUser() {
       return request.auth != null
         && request.auth.token.email != null
+        && request.auth.token.email_verified == true
         && request.auth.token.email.lower() in [
           'denisimam43@gmail.com',
           'salwafakhira13@gmail.com'

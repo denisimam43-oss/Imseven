@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Lock, Upload } from 'lucide-react';
-import { sendPasswordResetEmail, signInWithEmailAndPassword } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { auth } from '../firebase';
 
 export function LoginScreen({ onLogin }: { onLogin: () => void }) {
@@ -160,50 +160,37 @@ export function LoginScreen({ onLogin }: { onLogin: () => void }) {
   );
 }
 
-// ---------- Login mode online (Firebase) ----------
+// ---------- Login mode online (Firebase, akun Google) ----------
 
 export function CloudLoginScreen() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [msg, setMsg] = useState<{ text: string; ok?: boolean } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const logo = localStorage.getItem('appLogo') || localStorage.getItem('app_logo');
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleGoogle = async () => {
     setBusy(true);
     setMsg(null);
     try {
-      await signInWithEmailAndPassword(auth!, email.trim(), password);
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      await signInWithPopup(auth!, provider);
     } catch (err) {
       const code = (err as { code?: string }).code || '';
-      setMsg({
-        text:
-          code.includes('invalid-credential') || code.includes('wrong-password') || code.includes('user-not-found')
-            ? 'Email atau kata sandi salah.'
-            : code.includes('too-many-requests')
-              ? 'Terlalu banyak percobaan. Tunggu beberapa menit.'
+      setMsg(
+        code.includes('popup-closed') || code.includes('cancelled-popup')
+          ? 'Jendela login ditutup sebelum selesai. Coba lagi.'
+          : code.includes('popup-blocked')
+            ? 'Browser memblokir jendela login. Izinkan pop-up untuk situs ini, lalu coba lagi.'
+            : code.includes('unauthorized-domain')
+              ? 'Alamat aplikasi ini belum didaftarkan di Firebase (Authorized domains). Hubungi owner.'
               : code.includes('network')
                 ? 'Tidak ada koneksi internet.'
-                : 'Gagal masuk. Coba lagi.',
-      });
+                : `Gagal masuk (${code || 'unknown'}).`,
+      );
     } finally {
       setBusy(false);
     }
   };
-
-  const handleReset = async () => {
-    if (!email.trim()) return setMsg({ text: 'Isi email dulu, lalu tekan Lupa sandi.' });
-    try {
-      await sendPasswordResetEmail(auth!, email.trim());
-      setMsg({ text: `Link ganti sandi dikirim ke ${email.trim()}. Cek inbox / spam.`, ok: true });
-    } catch {
-      setMsg({ text: 'Gagal mengirim link. Periksa alamat email.' });
-    }
-  };
-
-  const inputCls =
-    'w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-navy-500 focus:ring-1 focus:ring-navy-500 text-sm font-medium text-slate-800';
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center items-center p-4">
@@ -213,39 +200,28 @@ export function CloudLoginScreen() {
             {logo ? <img src={logo} alt="Logo" className="w-full h-full object-contain bg-white" /> : <Lock className="text-white w-8 h-8" />}
           </div>
           <h2 className="text-2xl font-bold text-slate-800 tracking-tight">SEVEN FINANCE</h2>
-          <p className="text-sm font-medium text-slate-500 mt-1">Masuk dengan akun yang didaftarkan owner</p>
+          <p className="text-sm font-medium text-slate-500 mt-1 text-center">Masuk dengan akun Google yang didaftarkan owner</p>
         </div>
-        <form onSubmit={handleSubmit} className="space-y-5">
-          {msg && (
-            <div
-              className={`p-3 text-xs font-semibold rounded-lg text-center border ${
-                msg.ok ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-red-50 text-red-600 border-red-100'
-              }`}
-            >
-              {msg.text}
-            </div>
-          )}
-          <div>
-            <label className="block text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Email</label>
-            <input type="email" required autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} className={inputCls} />
-          </div>
-          <div>
-            <label className="block text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider">Kata sandi</label>
-            <input type="password" required autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} />
-          </div>
-          <button
-            type="submit"
-            disabled={busy}
-            className="w-full bg-gradient-to-r from-navy-600 to-navy-400 hover:from-navy-700 hover:to-navy-500 disabled:opacity-60 text-white text-xs font-bold uppercase tracking-widest py-3.5 rounded-xl transition-all shadow-sm"
-          >
-            {busy ? 'Memeriksa…' : 'Masuk'}
-          </button>
-        </form>
-        <div className="mt-6 text-center">
-          <button type="button" onClick={handleReset} className="text-[11px] font-bold text-slate-400 hover:text-navy-600 underline">
-            Lupa sandi?
-          </button>
-        </div>
+        {msg && (
+          <div className="mb-5 p-3 text-xs font-semibold rounded-lg text-center border bg-red-50 text-red-600 border-red-100">{msg}</div>
+        )}
+        <button
+          type="button"
+          onClick={handleGoogle}
+          disabled={busy}
+          className="w-full flex items-center justify-center gap-3 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-60 text-slate-800 text-sm font-bold py-3.5 rounded-xl transition-all shadow-sm"
+        >
+          <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+            <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.6l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.6 5.4 2.7 13.2l7.8 6.1C12.4 13.6 17.7 9.5 24 9.5z" />
+            <path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 6.9l7.5 5.8c4.4-4 6.8-10 6.8-17.2z" />
+            <path fill="#FBBC05" d="M10.5 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.8-6.1C1 16.6 0 20.2 0 24s1 7.4 2.7 10.8l7.8-6.1z" />
+            <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.8-5.8l-7.5-5.8c-2.1 1.4-4.9 2.3-8.3 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.8 6.1C6.6 42.6 14.6 48 24 48z" />
+          </svg>
+          {busy ? 'Menunggu login Google…' : 'Masuk dengan Google'}
+        </button>
+        <p className="mt-6 text-[11px] text-slate-400 text-center">
+          Hanya akun yang terdaftar yang bisa melihat data keuangan. Akun lain akan ditolak.
+        </p>
       </div>
     </div>
   );
