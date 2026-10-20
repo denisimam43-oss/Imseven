@@ -8,7 +8,7 @@ service cloud.firestore {
         && request.auth.token.email != null
         && request.auth.token.email.lower() in [
           'denisimam43@gmail.com',
-          'EMAIL_SALWA_DI_SINI'
+          'salwafakhira13@gmail.com'
         ];
     }
     match /{document=**} {
