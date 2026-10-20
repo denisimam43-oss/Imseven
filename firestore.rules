@@ -1,0 +1,18 @@
+rules_version = '2';
+// Aturan untuk database "seven-finance" (pilih database ini di Firestore -> Rules sebelum menempel).
+// Hanya email yang terdaftar di bawah yang bisa membaca & menulis data keuangan.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isFinanceUser() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() in [
+          'denisimam43@gmail.com',
+          'EMAIL_SALWA_DI_SINI'
+        ];
+    }
+    match /{document=**} {
+      allow read, write: if isFinanceUser();
+    }
+  }
+}

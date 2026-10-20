@@ -407,6 +407,8 @@ export function Dashboard() {
 
       {(!cloud.enabled || cloud.ready) && (
       <>
+      {(!cloud.enabled || cloud.ready) && (
+      <>
       <ArahanPanel
         onPayment={(id) => openModal("NEW_PAYMENT", id)}
         onRecap={() => setActiveTab("RECAP")}
@@ -548,6 +550,9 @@ export function Dashboard() {
           <DailyExpenseReport />
           <TransactionHistory />
         </div>
+      )}
+
+      </>
       )}
 
       </>
