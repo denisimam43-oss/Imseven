@@ -19,6 +19,8 @@ import {
   PaymentScheme,
 } from "../types";
 import { buildPlan } from "../plan";
+import { cloudEnabled } from "../firebase";
+import { CloudStatus, useCloudSync } from "./cloudSync";
 import { PeriodInfo, inPeriod, periodCapacity, periodInfo, periodOfTs, shiftPeriod } from "../calendar";
 import { generateId } from "../utils";
 import {
@@ -180,18 +182,42 @@ interface FinanceState {
   dismissReconcile: () => void;
   exportData: () => BackupData;
   importData: (data: unknown) => { ok: boolean; message: string };
+  // Database online (Firebase)
+  cloud: CloudStatus & {
+    enabled: boolean;
+    localData: BackupData | null; // data lama yang masih tersimpan di browser perangkat ini
+    migrateLocal: () => { ok: boolean; message: string };
+  };
+}
+
+/** Data lama di browser perangkat ini (sebelum pindah ke database online). */
+function readLocalData(): BackupData | null {
+  const projects = readJson<Project[]>(KEY_PROJECTS, []);
+  const transactions = readJson<Transaction[]>(KEY_TRANSACTIONS, []);
+  if (projects.length === 0 && transactions.length === 0) return null;
+  return {
+    app: "seven-interior-finance",
+    version: 2,
+    exportedAt: Date.now(),
+    projects,
+    transactions,
+    supports: readJson<ProjectSupport[]>(KEY_SUPPORTS, []),
+    settings: readJson<FinanceSettings | undefined>(KEY_SETTINGS, undefined),
+  };
 }
 
 const FinanceContext = createContext<FinanceState | undefined>(undefined);
 
 export function FinanceProvider({ children }: { children: ReactNode }) {
-  const [projects, setProjects] = useState<Project[]>(() => readJson(KEY_PROJECTS, []));
+  // Mode online: data datang dari server (bukan dari browser)
+  const [projects, setProjects] = useState<Project[]>(() => (cloudEnabled ? [] : readJson(KEY_PROJECTS, [])));
 
   const [needsReconcile, setNeedsReconcile] = useState<boolean>(
-    () => localStorage.getItem(KEY_RECONCILE) === "true",
+    () => !cloudEnabled && localStorage.getItem(KEY_RECONCILE) === "true",
   );
 
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
+    if (cloudEnabled) return [];
     const saved = readJson<Transaction[]>(KEY_TRANSACTIONS, []);
     if (needsMigration(saved)) {
       // Simpan cadangan data lama sebelum dikonversi
@@ -214,11 +240,11 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     return saved;
   });
 
-  const [supports, setSupports] = useState<ProjectSupport[]>(() => readJson(KEY_SUPPORTS, []));
+  const [supports, setSupports] = useState<ProjectSupport[]>(() => (cloudEnabled ? [] : readJson(KEY_SUPPORTS, [])));
 
   const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>("THIS_CUTOFF");
   const [settings, setSettings] = useState<FinanceSettings>(() => {
-    const saved = readJson<Partial<FinanceSettings>>(KEY_SETTINGS, {});
+    const saved = cloudEnabled ? {} : readJson<Partial<FinanceSettings>>(KEY_SETTINGS, {});
     return {
       ...DEFAULT_SETTINGS,
       ...saved,
@@ -235,21 +261,35 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Status ini bisa diset saat migrasi di inisialisasi state transaksi
-    if (localStorage.getItem(KEY_RECONCILE) === "true") setNeedsReconcile(true);
+    if (!cloudEnabled && localStorage.getItem(KEY_RECONCILE) === "true") setNeedsReconcile(true);
   }, []);
 
+  // Mode lokal: simpan di browser. Mode online: disimpan ke server oleh useCloudSync.
   useEffect(() => {
-    localStorage.setItem(KEY_PROJECTS, JSON.stringify(projects));
+    if (!cloudEnabled) localStorage.setItem(KEY_PROJECTS, JSON.stringify(projects));
   }, [projects]);
   useEffect(() => {
-    localStorage.setItem(KEY_TRANSACTIONS, JSON.stringify(transactions));
+    if (!cloudEnabled) localStorage.setItem(KEY_TRANSACTIONS, JSON.stringify(transactions));
   }, [transactions]);
   useEffect(() => {
-    localStorage.setItem(KEY_SUPPORTS, JSON.stringify(supports));
+    if (!cloudEnabled) localStorage.setItem(KEY_SUPPORTS, JSON.stringify(supports));
   }, [supports]);
   useEffect(() => {
-    localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings));
+    if (!cloudEnabled) localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings));
   }, [settings]);
+
+  const cloudStatus = useCloudSync({
+    active: cloudEnabled,
+    projects,
+    setProjects,
+    transactions,
+    setTransactions,
+    supports,
+    setSupports,
+    settings,
+    setSettings,
+  });
+  const localData = useMemo(() => (cloudEnabled ? readLocalData() : null), []);
 
   const dismissReconcile = () => {
     localStorage.removeItem(KEY_RECONCILE);
@@ -737,6 +777,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     };
   };
 
+  const migrateLocal = () => {
+    if (!localData) return { ok: false, message: "Tidak ada data lama di perangkat ini." };
+    if (!cloudStatus.empty) return { ok: false, message: "Database online sudah berisi data; pindahkan lewat Pulihkan bila perlu." };
+    return importData(localData);
+  };
+
   // ---------- Perhitungan ----------
 
   const isInPeriod = useMemo(() => {
@@ -858,6 +904,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         dismissReconcile,
         exportData,
         importData,
+        cloud: { ...cloudStatus, enabled: cloudEnabled, localData, migrateLocal },
       }}
     >
       {children}

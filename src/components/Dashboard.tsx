@@ -33,6 +33,8 @@ import {
   BookLock,
 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
+import { sendPasswordResetEmail, signOut } from "firebase/auth";
+import { auth } from "../firebase";
 import { FilterPeriod } from "../types";
 import { formatRupiah, cn } from "../utils";
 
@@ -64,6 +66,7 @@ export function Dashboard() {
     dismissReconcile,
     exportData,
     importData,
+    cloud,
   } = useFinance();
 
   const handleExport = () => {
@@ -170,6 +173,14 @@ export function Dashboard() {
             <p className="text-xs font-medium text-slate-500 mt-0.5">
               Firewall 4 Rekening • Pembayaran Sesuai Fakta • Laba Diakui Saat Serah Terima
             </p>
+            {cloud.enabled && (
+              <p className="text-[11px] font-semibold mt-1 flex items-center gap-1.5">
+                <span className={cn("w-2 h-2 rounded-full", cloud.error ? "bg-rose-500" : cloud.saving ? "bg-amber-400" : "bg-emerald-500")} />
+                <span className={cloud.error ? "text-rose-600" : "text-slate-500"}>
+                  {cloud.error ? "Tidak tersambung ke server" : cloud.saving ? "Menyimpan ke server…" : `Online · ${auth?.currentUser?.email ?? ""}`}
+                </span>
+              </p>
+            )}
           </div>
         </div>
 
@@ -177,6 +188,10 @@ export function Dashboard() {
         <div className="flex flex-wrap items-center gap-2.5">
           <button
             onClick={() => {
+              if (cloud.enabled && auth) {
+                signOut(auth);
+                return;
+              }
               sessionStorage.removeItem("finance_admin_logged_in");
               window.location.reload();
             }}
@@ -206,7 +221,16 @@ export function Dashboard() {
             <input type="file" accept="application/json,.json" className="hidden" onChange={handleImport} />
           </label>
           <button
-            onClick={() => openModal("CHANGE_PASSWORD")}
+            onClick={() => {
+              const email = auth?.currentUser?.email;
+              if (cloud.enabled && auth && email) {
+                sendPasswordResetEmail(auth, email)
+                  .then(() => alert(`Link ganti sandi sudah dikirim ke ${email}.`))
+                  .catch(() => alert("Gagal mengirim link ganti sandi. Coba lagi."));
+                return;
+              }
+              openModal("CHANGE_PASSWORD");
+            }}
             className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-navy-300 hover:bg-slate-50 transition-colors uppercase tracking-wider shadow-sm"
           >
             Sandi
@@ -279,6 +303,45 @@ export function Dashboard() {
         </div>
       </div>
 
+      {cloud.enabled && cloud.error && (
+        <div className="mb-6 p-4 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 font-semibold">
+          {cloud.error}
+        </div>
+      )}
+
+      {cloud.enabled && !cloud.ready && !cloud.error && (
+        <div className="mb-6 p-6 bg-white border border-slate-200 rounded-2xl text-sm text-slate-500 text-center">
+          Mengambil data dari server…
+        </div>
+      )}
+
+      {cloud.enabled && cloud.empty && (
+        <div className="mb-6 p-4 bg-indigo-50 border border-indigo-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-indigo-950 text-xs">
+          {cloud.localData ? (
+            <>
+              <span>
+                <b>Database online masih kosong.</b> Di perangkat ini ada data lama: {cloud.localData.projects.length} proyek &{" "}
+                {cloud.localData.transactions.length} transaksi. Pindahkan sekali saja ke server agar bisa dibuka dari perangkat lain.
+              </span>
+              <button
+                onClick={() => {
+                  if (!window.confirm("Pindahkan seluruh data lama di perangkat ini ke database online?")) return;
+                  alert(cloud.migrateLocal().message);
+                }}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl self-start sm:self-auto shrink-0"
+              >
+                Pindahkan ke server
+              </button>
+            </>
+          ) : (
+            <span>
+              <b>Database online masih kosong.</b> Buka aplikasi ini di laptop yang dulu dipakai mencatat (data lama ada di sana),
+              lalu tekan &quot;Pindahkan ke server&quot;. Atau gunakan tombol <b>Pulihkan</b> dengan file backup .json terbaru.
+            </span>
+          )}
+        </div>
+      )}
+
       {needsReconcile && (
         <div className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-purple-900">
           <div className="flex items-start gap-3">
@@ -302,7 +365,7 @@ export function Dashboard() {
         </div>
       )}
 
-      {!needsReconcile && backupStale && (
+      {!cloud.enabled && !needsReconcile && backupStale && (
         <div className="mb-6 p-3 bg-slate-100 border border-slate-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-slate-700">
           <span>
             Data hanya tersimpan di browser perangkat ini. Unduh backup minimal seminggu sekali agar tidak hilang.
@@ -342,6 +405,8 @@ export function Dashboard() {
         </div>
       )}
 
+      {(!cloud.enabled || cloud.ready) && (
+      <>
       <ArahanPanel
         onPayment={(id) => openModal("NEW_PAYMENT", id)}
         onRecap={() => setActiveTab("RECAP")}
@@ -483,6 +548,9 @@ export function Dashboard() {
           <DailyExpenseReport />
           <TransactionHistory />
         </div>
+      )}
+
+      </>
       )}
 
       {/* Modals Provider */}
