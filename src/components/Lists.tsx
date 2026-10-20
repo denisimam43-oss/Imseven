@@ -13,9 +13,12 @@ import {
   HandCoins,
   PackageCheck,
   Undo2,
+  Download,
+  FileSpreadsheet,
 } from "lucide-react";
 import { INCOME_TYPE_LABEL, Project, RekeningType, Transaction } from "../types";
 import { summarizeProject } from "../finance";
+import { downloadCsv, generateTransactionsCsv } from "../csvExport";
 
 type ProjectFilter = "ALL" | "ONGOING" | "COMPLETED" | "ARCHIVED";
 
@@ -354,10 +357,25 @@ export function TransactionHistory() {
             Urut berdasarkan tanggal transaksi. Cocokkan dengan mutasi rekening setiap minggu.
           </p>
         </div>
-        <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer">
-          <input type="checkbox" checked={showTransfers} onChange={(e) => setShowTransfers(e.target.checked)} />
-          Tampilkan transfer antar rekening
-        </label>
+        <div className="flex items-center gap-3 self-start sm:self-auto flex-wrap">
+          <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer">
+            <input type="checkbox" checked={showTransfers} onChange={(e) => setShowTransfers(e.target.checked)} />
+            Tampilkan transfer antar rekening
+          </label>
+          <button
+            onClick={() => {
+              const now = new Date();
+              const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+              const csv = generateTransactionsCsv(rows, projects, { delimiter: ",", includeTransfers: showTransfers });
+              downloadCsv(csv, `seven-interior-mutasi-kas-${dateStr}.csv`);
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-emerald-50 hover:text-emerald-700 hover:border-emerald-200 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 transition-colors uppercase tracking-wider shadow-2xs"
+            title="Unduh riwayat transaksi kas yang tampil sebagai file CSV"
+          >
+            <Download size={13} className="text-emerald-600" />
+            Ekspor CSV
+          </button>
+        </div>
       </div>
       <div className="overflow-x-auto max-h-[480px] overflow-y-auto">
         <table className="w-full text-left border-collapse">

@@ -10,6 +10,7 @@ import { ProjectReport } from "./ProjectReport";
 import { ProjectSupportManager } from "./ProjectSupportManager";
 import { StrategyPanel } from "./StrategyPanel";
 import { Modals, ModalType } from "./Modals";
+import { CsvExportModal, ReportExportType } from "./CsvExportModal";
 import {
   PlusCircle,
   ArrowDownRight,
@@ -42,6 +43,14 @@ export function Dashboard() {
   const [activeTab, setActiveTab] = useState<
     "ALL" | "OVERVIEW" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "EXPENSES"
   >("ALL");
+
+  const [csvModalOpen, setCsvModalOpen] = useState(false);
+  const [csvModalType, setCsvModalType] = useState<ReportExportType>("ALL_COMPREHENSIVE");
+
+  const openCsvExport = (type: ReportExportType = "ALL_COMPREHENSIVE") => {
+    setCsvModalType(type);
+    setCsvModalOpen(true);
+  };
 
   const {
     filterPeriod,
@@ -171,6 +180,13 @@ export function Dashboard() {
             className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-rose-600 hover:border-rose-300 hover:bg-rose-50 transition-colors uppercase tracking-wider shadow-sm"
           >
             <LogOut size={13} className="mr-1.5" /> Logout
+          </button>
+          <button
+            onClick={() => openCsvExport("ALL_COMPREHENSIVE")}
+            className="flex items-center px-3.5 py-2 bg-emerald-50 border border-emerald-200 rounded-xl text-xs font-bold text-emerald-800 hover:bg-emerald-100 hover:border-emerald-300 transition-colors uppercase tracking-wider shadow-sm"
+            title="Ekspor laporan keuangan ke format CSV (Excel / Google Sheets)"
+          >
+            <FileSpreadsheet size={13} className="mr-1.5 text-emerald-600" /> Ekspor CSV
           </button>
           <button
             onClick={handleExport}
@@ -446,6 +462,13 @@ export function Dashboard() {
 
       {/* Modals Provider */}
       <Modals activeModal={modal} close={() => setModal(null)} initialProjectId={modalProjectId} />
+
+      {/* CSV Export Reporting Modal */}
+      <CsvExportModal
+        isOpen={csvModalOpen}
+        onClose={() => setCsvModalOpen(false)}
+        defaultType={csvModalType}
+      />
     </div>
   );
 }

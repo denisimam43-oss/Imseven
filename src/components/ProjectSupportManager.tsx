@@ -9,7 +9,9 @@ import {
   Clock,
   RotateCcw,
   PlusCircle,
+  Download,
 } from "lucide-react";
+import { downloadCsv, generateSupportsCsv } from "../csvExport";
 
 export function ProjectSupportManager({
   onOpenAddModal,
@@ -92,6 +94,19 @@ export function ProjectSupportManager({
             </button>
           </div>
 
+          <button
+            onClick={() => {
+              const now = new Date();
+              const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+              const csv = generateSupportsCsv(filteredSupports);
+              downloadCsv(csv, `seven-interior-talangan-antar-proyek-${dateStr}.csv`);
+            }}
+            className="flex items-center px-3.5 py-2 bg-slate-100 hover:bg-amber-50 hover:text-amber-800 hover:border-amber-200 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 transition-colors uppercase tracking-wider shadow-2xs"
+            title="Unduh data talangan antar proyek dalam format CSV"
+          >
+            <Download size={13} className="mr-1.5 text-amber-600" />
+            Ekspor CSV
+          </button>
           <button
             onClick={onOpenAddModal}
             className="flex items-center px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors shadow-sm"

@@ -4,6 +4,8 @@ import { isRealIncome, isRealExpense } from "../finance";
 import { formatRupiah, cn } from '../utils';
 import { format, isSameDay } from 'date-fns';
 import { id } from 'date-fns/locale';
+import { Download } from 'lucide-react';
+import { downloadCsv, generateDailyExpenseCsv } from '../csvExport';
 
 export function DailyExpenseReport() {
   const { filteredTransactions } = useFinance();
@@ -38,8 +40,21 @@ export function DailyExpenseReport() {
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-      <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+      <div className="p-6 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h4 className="font-bold text-slate-700">Laporan Pengeluaran Harian</h4>
+        <button
+          onClick={() => {
+            const now = new Date();
+            const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+            const csv = generateDailyExpenseCsv(filteredTransactions);
+            downloadCsv(csv, `seven-interior-pengeluaran-harian-${dateStr}.csv`);
+          }}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-200 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 transition-colors uppercase tracking-wider shadow-2xs self-start sm:self-auto shrink-0"
+          title="Unduh data pengeluaran harian dalam format CSV"
+        >
+          <Download size={13} className="text-rose-600" />
+          Ekspor CSV Pengeluaran
+        </button>
       </div>
       <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
         <table className="w-full text-left border-collapse">
