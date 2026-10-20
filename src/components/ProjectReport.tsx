@@ -2,6 +2,8 @@ import React, { useMemo } from "react";
 import { useFinance } from "../store/FinanceContext";
 import { formatRupiah, cn } from "../utils";
 import { computeBalanceSheet, computeProfitLoss, summarizeProject } from "../finance";
+import { Download } from "lucide-react";
+import { downloadCsv, generateProjectsCsv } from "../csvExport";
 
 const PERIOD_LABEL: Record<string, string> = {
   THIS_CUTOFF: "periode cut-off berjalan",
@@ -74,11 +76,26 @@ export function ProjectReport() {
         </div>
       </div>
 
-      <div className="px-6 py-4 bg-slate-50 border-b border-slate-100">
-        <h5 className="font-bold text-slate-800 text-sm">Profitabilitas Per Proyek</h5>
-        <p className="text-[11px] text-slate-500 font-medium">
-          Dihitung dari seluruh transaksi proyek (tidak tergantung filter periode). Proyek berjalan menampilkan estimasi.
-        </p>
+      <div className="px-6 py-4 bg-slate-50 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h5 className="font-bold text-slate-800 text-sm">Profitabilitas Per Proyek</h5>
+          <p className="text-[11px] text-slate-500 font-medium">
+            Dihitung dari seluruh transaksi proyek (tidak tergantung filter periode). Proyek berjalan menampilkan estimasi.
+          </p>
+        </div>
+        <button
+          onClick={() => {
+            const now = new Date();
+            const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+            const csv = generateProjectsCsv(projects, transactions, supports);
+            downloadCsv(csv, `seven-interior-rekap-laba-proyek-${dateStr}.csv`);
+          }}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-sky-50 hover:text-sky-700 hover:border-sky-200 border border-slate-200 rounded-xl text-xs font-bold text-slate-700 transition-colors uppercase tracking-wider shadow-2xs self-start sm:self-auto shrink-0"
+          title="Unduh rekapitulasi laba rugi proyek dalam format CSV"
+        >
+          <Download size={13} className="text-sky-600" />
+          Ekspor CSV Proyek
+        </button>
       </div>
 
       <div className="overflow-x-auto">
