@@ -5,6 +5,7 @@ import { isRealIncome, isRealExpense } from "../finance";
 import { format, subDays, isSameDay, getDaysInMonth, startOfMonth, startOfYear, setMonth, isSameMonth } from 'date-fns';
 import { id } from 'date-fns/locale';
 import { formatRupiah } from '../utils';
+import { periodOfTs, shiftPeriod, mkDate, BULAN } from '../calendar';
 
 export function CashFlowChart() {
   const { transactions, filterPeriod } = useFinance();
@@ -12,7 +13,33 @@ export function CashFlowChart() {
   const chartData = useMemo(() => {
     const now = new Date();
     
-    if (filterPeriod === '7_DAYS') {
+    if (filterPeriod === 'THIS_CUTOFF' || filterPeriod === 'LAST_CUTOFF') {
+      // Periode cut-off 26 -> 25, dibagi per 7 hari
+      const cur = periodOfTs(now.getTime());
+      const p = filterPeriod === 'THIS_CUTOFF' ? cur : shiftPeriod(cur, -1);
+      const buckets: { s: Date; e: Date }[] = [];
+      for (let k = 0; ; k++) {
+        const s = mkDate(p.start.getFullYear(), p.start.getMonth() + 1, p.start.getDate() + 7 * k);
+        if (s > p.end) break;
+        const e0 = mkDate(s.getFullYear(), s.getMonth() + 1, s.getDate() + 6);
+        buckets.push({ s, e: e0 > p.end ? p.end : e0 });
+      }
+      const lbl = (d: Date) => `${d.getDate()} ${BULAN[d.getMonth()]}`;
+      return buckets.map(({ s, e }) => {
+        const lo = new Date(s.getFullYear(), s.getMonth(), s.getDate()).getTime();
+        const hi = new Date(e.getFullYear(), e.getMonth(), e.getDate() + 1).getTime();
+        const tx = transactions.filter(t => t.date >= lo && t.date < hi);
+        const rawIn = tx.filter(t => isRealIncome(t)).reduce((sum, t) => sum + t.amount, 0);
+        const realOut = tx.filter(t => isRealExpense(t)).reduce((sum, t) => sum + t.amount, 0);
+        return {
+          name: lbl(s),
+          fullDate: `${lbl(s)} – ${lbl(e)}`,
+          Income: rawIn,
+          Expense: realOut,
+          Profit: rawIn - realOut
+        };
+      });
+    } else if (filterPeriod === '7_DAYS') {
       const days = Array.from({ length: 7 }).map((_, i) => subDays(now, 6 - i));
       return days.map(day => {
         const dayTransactions = transactions.filter(t => isSameDay(new Date(t.date), day));
@@ -99,6 +126,8 @@ export function CashFlowChart() {
 
   const getSubTitle = () => {
     switch (filterPeriod) {
+      case 'THIS_CUTOFF': return 'Periode Cut-off Berjalan (26–25)';
+      case 'LAST_CUTOFF': return 'Periode Cut-off Lalu (26–25)';
       case '7_DAYS': return '7 Hari Terakhir';
       case 'THIS_MONTH': return 'Bulan Ini';
       case '6_MONTHS': return '6 Bulan Terakhir';

@@ -24,6 +24,40 @@ export interface Project {
   // Koreksi saldo "dana HPP proyek" agar sesuai uang yang benar-benar masih ada
   // (mis. DP sudah terpakai -> dana tersedia = 0).
   fundAdjustment?: number;
+
+  // ---- Rencana otomatis (dibuat saat DP masuk) ----
+  category?: ProjectCategory;
+  paymentScheme?: PaymentScheme;
+  plan?: ProjectPlan;
+}
+
+export type ProjectCategory = "REGULER" | "PREMIUM";
+export type PaymentScheme = "50_50" | "30_40_30";
+
+export const CATEGORY_LABEL: Record<ProjectCategory, string> = {
+  REGULER: "Reguler",
+  PREMIUM: "Premium / All Interior",
+};
+export const SCHEME_LABEL: Record<PaymentScheme, string> = {
+  "50_50": "DP 50% · Pelunasan 50%",
+  "30_40_30": "DP 30% · Termin 40% · Pelunasan 30%",
+};
+
+export interface PlannedPayment {
+  label: "DP" | "Termin 2" | "Pelunasan";
+  pct: number; // persen dari nilai kontrak
+  amount: number;
+  due: number; // timestamp jatuh tempo
+}
+
+export interface ProjectPlan {
+  dpDate: number;
+  productionStart: number;
+  productionEnd: number;
+  installEnd: number;
+  handover: number; // rencana serah terima (BAST)
+  payments: PlannedPayment[];
+  handoverManual?: boolean; // tanggal serah terima diubah manual
 }
 
 export type RekeningType = "REK1" | "REK2" | "REK3" | "REK4";
@@ -88,6 +122,7 @@ export interface Transaction {
 
   supportId?: string; // terkait talangan / subsidi silang
   isAdjustment?: boolean; // penyesuaian saldo (rekonsiliasi), bukan omset/biaya
+  pending?: boolean; // TRANSFER arahan yang belum dikerjakan admin di bank (belum mengubah saldo)
 }
 
 // Inter-Project Support (Subsidi Silang / Talangan Antar Proyek)
@@ -106,7 +141,7 @@ export interface ProjectSupport {
   toAccount?: RekeningType; // rekening penerima (default sama dengan sumber)
 }
 
-export type FilterPeriod = "7_DAYS" | "THIS_MONTH" | "6_MONTHS" | "THIS_YEAR";
+export type FilterPeriod = "THIS_CUTOFF" | "LAST_CUTOFF" | "7_DAYS" | "THIS_MONTH" | "6_MONTHS" | "THIS_YEAR";
 
 // ---------- Pengaturan keuangan (bisa diubah di aplikasi) ----------
 
@@ -127,6 +162,10 @@ export interface FinanceSettings {
   monthlyOffice: number; // biaya operasional kantor per bulan
   avgProjectValue: number; // rata-rata nilai kontrak (0 = hitung otomatis)
   recoveryMonths: number; // target lama menutup lubang utang project
+  slotValue: number; // nilai 1 slot kapasitas (Rp)
+  slotsPerPeriod: number; // kapasitas produksi penuh per periode
+  baseWorkdays: number; // hari kerja periode penuh
+  closedThrough?: string; // periode terakhir yang sudah tutup buku, mis. "2026-11"
 }
 
 export const DEFAULT_SETTINGS: FinanceSettings = {
@@ -135,4 +174,13 @@ export const DEFAULT_SETTINGS: FinanceSettings = {
   monthlyOffice: 13650000,
   avgProjectValue: 0,
   recoveryMonths: 6,
+  slotValue: 30000000,
+  slotsPerPeriod: 12,
+  baseWorkdays: 26,
+};
+
+/** Durasi standar (hari kerja) setelah DP / kick off. */
+export const DURATIONS: Record<ProjectCategory, { produksi: number; instalasi: number }> = {
+  REGULER: { produksi: 7, instalasi: 1 },
+  PREMIUM: { produksi: 10, instalasi: 3 },
 };

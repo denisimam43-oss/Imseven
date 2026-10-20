@@ -15,7 +15,11 @@ import {
   IncomeType,
   FinanceSettings,
   DEFAULT_SETTINGS,
+  ProjectCategory,
+  PaymentScheme,
 } from "../types";
+import { buildPlan } from "../plan";
+import { PeriodInfo, inPeriod, periodCapacity, periodInfo, periodOfTs, shiftPeriod } from "../calendar";
 import { generateId } from "../utils";
 import {
   analyzeProject,
@@ -70,6 +74,12 @@ export interface DebtProjectInput {
   expectedSettlementAt?: number;
 }
 
+export interface PlanInput {
+  category: ProjectCategory;
+  scheme: PaymentScheme;
+  handover?: number; // isi bila serah terima disepakati berbeda dari jadwal standar
+}
+
 export interface BackupData {
   app: "seven-interior-finance";
   version: 2;
@@ -99,7 +109,17 @@ interface FinanceState {
     clientNotes?: string,
     firstPayment?: Omit<PaymentInput, "projectId">,
     debtInput?: DebtProjectInput,
+    planInput?: PlanInput,
   ) => void;
+  setProjectPlan: (projectId: string, input: PlanInput & { dpDate?: number }) => void;
+  // Arahan transfer: alokasi yang belum dikerjakan di bank
+  pendingTransfers: Transaction[];
+  confirmTransfers: (ids: string[], date?: number) => void;
+  // Periode cut-off (26 -> 25) & tutup buku
+  currentPeriod: PeriodInfo;
+  isLocked: (ts: number) => boolean;
+  closePeriod: (key: string) => { ok: boolean; message: string };
+  reopenPeriod: () => void;
   updateProject: (
     id: string,
     data: Partial<
@@ -196,7 +216,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   const [supports, setSupports] = useState<ProjectSupport[]>(() => readJson(KEY_SUPPORTS, []));
 
-  const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>("THIS_MONTH");
+  const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>("THIS_CUTOFF");
   const [settings, setSettings] = useState<FinanceSettings>(() => {
     const saved = readJson<Partial<FinanceSettings>>(KEY_SETTINGS, {});
     return {
@@ -209,6 +229,9 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   const updateSettings: FinanceState["updateSettings"] = (data) => {
     setSettings((prev) => ({ ...prev, ...data, shares: { ...prev.shares, ...(data.shares || {}) } }));
   };
+
+  // Periode yang sudah tutup buku tidak boleh berubah lagi
+  const isLocked = (ts: number) => !!settings.closedThrough && periodOfTs(ts).key <= settings.closedThrough;
 
   useEffect(() => {
     // Status ini bisa diset saat migrasi di inisialisasi state transaksi
@@ -266,11 +289,20 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       alreadyReceived,
       debtNeed,
     });
-    return [income, ...buildAllocationTransfers(income, split, project.name)];
+    // Transfer alokasi menjadi ARAHAN: saldo baru berubah setelah admin konfirmasi sudah transfer
+    return [income, ...buildAllocationTransfers(income, split, project.name, true)];
   };
 
-  const addProject: FinanceState["addProject"] = (name, totalValue, clientNotes, firstPayment, debtInput) => {
+  const addProject: FinanceState["addProject"] = (
+    name,
+    totalValue,
+    clientNotes,
+    firstPayment,
+    debtInput,
+    planInput,
+  ) => {
     const createdAt = firstPayment?.date ?? Date.now();
+    if (firstPayment && firstPayment.amount > 0 && isLocked(firstPayment.date)) return;
     const newProject: Project = {
       id: generateId(),
       name,
@@ -280,6 +312,14 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       createdAt,
       clientNotes,
     };
+    if (planInput) {
+      newProject.category = planInput.category;
+      newProject.paymentScheme = planInput.scheme;
+      // Rencana otomatis dibuat begitu DP masuk (proyek reguler, bukan utang project)
+      if (!debtInput && firstPayment && firstPayment.amount > 0) {
+        newProject.plan = buildPlan(planInput.category, planInput.scheme, totalValue, firstPayment.date, planInput.handover);
+      }
+    }
     if (debtInput) {
       // Utang project: DP sudah terpakai, jadi DP dicatat tanpa alokasi dan
       // dana HPP proyek dikoreksi menjadi sebesar dana yang benar-benar masih ada.
@@ -342,7 +382,50 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   };
 
   const updateProject: FinanceState["updateProject"] = (id, data) => {
-    setProjects((prev) => prev.map((p) => (p.id === id ? { ...p, ...data } : p)));
+    setProjects((prev) =>
+      prev.map((p) => {
+        if (p.id !== id) return p;
+        const next = { ...p, ...data };
+        // Nilai kontrak berubah -> nominal tagihan rencana ikut menyesuaikan
+        if (next.plan && data.totalValue !== undefined && data.totalValue !== p.totalValue) {
+          next.plan = {
+            ...next.plan,
+            payments: next.plan.payments.map((x) => ({ ...x, amount: Math.round((next.totalValue * x.pct) / 100) })),
+          };
+        }
+        return next;
+      }),
+    );
+  };
+
+  const setProjectPlan: FinanceState["setProjectPlan"] = (projectId, input) => {
+    setProjects((prev) =>
+      prev.map((p) => {
+        if (p.id !== projectId) return p;
+        const firstIncome = transactions
+          .filter((t) => t.projectId === p.id && isRealIncome(t))
+          .reduce<number | undefined>((m, t) => (m === undefined || t.date < m ? t.date : m), undefined);
+        const dpDate = input.dpDate ?? firstIncome ?? p.createdAt;
+        return {
+          ...p,
+          category: input.category,
+          paymentScheme: input.scheme,
+          plan: buildPlan(input.category, input.scheme, p.totalValue, dpDate, input.handover),
+        };
+      }),
+    );
+  };
+
+  const confirmTransfers: FinanceState["confirmTransfers"] = (ids, date = Date.now()) => {
+    const set = new Set(ids);
+    // Tanggal = hari admin benar-benar transfer di bank (tidak boleh masuk periode yang sudah ditutup)
+    setTransactions((prev) =>
+      prev.map((t) =>
+        set.has(t.id) && t.pending
+          ? { ...t, pending: undefined, date: Math.max(date, t.date) }
+          : t,
+      ),
+    );
   };
 
   const settleSupportTx = (sup: ProjectSupport, date: number): Transaction[] => [
@@ -373,7 +456,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   const receivePayment: FinanceState["receivePayment"] = (input) => {
     const project = projects.find((p) => p.id === input.projectId);
-    if (!project) return;
+    if (!project || isLocked(input.date)) return;
     let extra: Transaction[] = [];
     if (input.settleSupports) {
       const outstanding = outstandingSupportFor(supports, project.id);
@@ -389,12 +472,15 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   };
 
   const completeProject: FinanceState["completeProject"] = (projectId, date) => {
+    if (isLocked(date)) return;
     setProjects((prev) =>
       prev.map((p) => (p.id === projectId ? { ...p, status: "COMPLETED", completedAt: date } : p)),
     );
   };
 
   const reopenProject: FinanceState["reopenProject"] = (projectId) => {
+    const p0 = projects.find((p) => p.id === projectId);
+    if (p0?.completedAt && isLocked(p0.completedAt)) return;
     setProjects((prev) =>
       prev.map((p) =>
         p.id === projectId ? { ...p, status: "ONGOING", completedAt: undefined } : p,
@@ -425,6 +511,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     projectId,
     date = Date.now(),
   ) => {
+    if (isLocked(date)) return;
     setTransactions((prev) => [
       {
         id: generateId(),
@@ -449,7 +536,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     date = Date.now(),
     projectId,
   ) => {
-    if (from === to) return;
+    if (from === to || isLocked(date)) return;
     setTransactions((prev) => [
       {
         id: generateId(),
@@ -479,6 +566,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     date = Date.now(),
     toAccount,
   ) => {
+    if (isLocked(date)) return;
     const supportId = generateId();
     const destAccount = toAccount || account;
     const newSupport: ProjectSupport = {
@@ -525,7 +613,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   const settleSupport: FinanceState["settleSupport"] = (supportId, date = Date.now()) => {
     const sup = supports.find((s) => s.id === supportId);
-    if (!sup || sup.status === "RETURNED") return;
+    if (!sup || sup.status === "RETURNED" || isLocked(date)) return;
     setSupports((prev) =>
       prev.map((s) => (s.id === supportId ? { ...s, status: "RETURNED", returnedAt: date } : s)),
     );
@@ -533,6 +621,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   };
 
   const deleteSupport: FinanceState["deleteSupport"] = (supportId) => {
+    if (transactions.some((t) => t.supportId === supportId && isLocked(t.date))) return;
     setSupports((prev) => prev.filter((s) => s.id !== supportId));
     setTransactions((prev) => prev.filter((t) => t.supportId !== supportId));
   };
@@ -562,13 +651,15 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   const deleteTransaction: FinanceState["deleteTransaction"] = (id) => {
     // Menghapus uang masuk juga menghapus transfer alokasinya
+    const t0 = transactions.find((t) => t.id === id);
+    if (!t0 || isLocked(t0.date)) return;
     setTransactions((prev) => prev.filter((t) => t.id !== id && t.parentId !== id));
   };
 
   const updateTransaction: FinanceState["updateTransaction"] = (id, data) => {
     setTransactions((prev) => {
       const orig = prev.find((t) => t.id === id);
-      if (!orig) return prev;
+      if (!orig || isLocked(orig.date) || (data.date !== undefined && isLocked(data.date))) return prev;
       const amountChanged =
         data.amount !== undefined && data.amount !== orig.amount && orig.amount > 0;
       const ratio = amountChanged ? (data.amount as number) / orig.amount : 1;
@@ -585,6 +676,37 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         return t;
       });
     });
+  };
+
+  // ---------- Tutup buku ----------
+
+  const currentPeriod = useMemo(() => periodOfTs(Date.now()), []);
+
+  const closePeriod: FinanceState["closePeriod"] = (key) => {
+    const [y, m] = key.split("-").map(Number);
+    const p = periodInfo(y, m);
+    if (p.end.getTime() >= periodOfTs(Date.now()).start.getTime()) {
+      return { ok: false, message: `Periode ${p.label} belum selesai (cut-off ${p.end.getDate()} ${p.label}).` };
+    }
+    if (settings.closedThrough) {
+      const [cy, cm] = settings.closedThrough.split("-").map(Number);
+      const next = shiftPeriod(periodInfo(cy, cm), 1);
+      if (key !== next.key) return { ok: false, message: `Tutup buku harus berurutan. Periode berikutnya: ${next.label}.` };
+    }
+    const pend = transactions.filter((t) => t.pending && inPeriod(p, t.date)).length;
+    if (pend > 0) {
+      return { ok: false, message: `Masih ada ${pend} arahan transfer di periode ${p.label} yang belum dikonfirmasi.` };
+    }
+    setSettings((prev) => ({ ...prev, closedThrough: key }));
+    return { ok: true, message: `Periode ${p.label} sudah tutup buku.` };
+  };
+
+  const reopenPeriod = () => {
+    if (!settings.closedThrough) return;
+    const [cy, cm] = settings.closedThrough.split("-").map(Number);
+    const p = periodInfo(cy, cm);
+    const prev = shiftPeriod(p, -1);
+    setSettings((s) => ({ ...s, closedThrough: s.closedThrough === p.key ? prev.key : s.closedThrough }));
   };
 
   // ---------- Backup ----------
@@ -621,6 +743,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     return (ts: number) => {
       const now = new Date();
       const d = new Date(ts);
+      if (filterPeriod === "THIS_CUTOFF") return inPeriod(periodOfTs(now.getTime()), ts);
+      if (filterPeriod === "LAST_CUTOFF") return inPeriod(shiftPeriod(periodOfTs(now.getTime()), -1), ts);
       if (filterPeriod === "7_DAYS") {
         return (now.getTime() - d.getTime()) / (1000 * 3600 * 24) <= 7;
       } else if (filterPeriod === "THIS_MONTH") {
@@ -648,11 +772,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   const balances = useMemo(() => {
     const b = computeBalances(transactions);
-    const now = new Date();
-    const thisMonth = transactions.filter((t) => {
-      const d = new Date(t.date);
-      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-    });
+    // "Bulan ini" = periode cut-off berjalan (26 -> 25)
+    const thisMonth = transactions.filter((t) => inPeriod(currentPeriod, t.date));
     return {
       rek1: b.REK1,
       rek2: b.REK2,
@@ -668,15 +789,20 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         .filter((s) => s.status === "OUTSTANDING")
         .reduce((sum, s) => sum + s.amount, 0),
     };
-  }, [transactions, supports, activeProjects]);
+  }, [transactions, supports, activeProjects, currentPeriod]);
+
+  const pendingTransfers = useMemo(
+    () => sortedTransactions.filter((t) => t.pending),
+    [sortedTransactions],
+  );
 
   const debt = useMemo(
     () => summarizeDebt(projects, transactions, supports, settings.shares),
     [projects, transactions, supports, settings.shares],
   );
   const marketTarget = useMemo(
-    () => computeMarketTarget(settings, debt.totalHole, projects),
-    [settings, debt.totalHole, projects],
+    () => computeMarketTarget(settings, debt.totalHole, projects, periodCapacity(currentPeriod, settings)),
+    [settings, debt.totalHole, projects, currentPeriod],
   );
 
   const filteredBalances = useMemo(
@@ -706,6 +832,13 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         fundFromRecovery,
         addProject,
         updateProject,
+        setProjectPlan,
+        pendingTransfers,
+        confirmTransfers,
+        currentPeriod,
+        isLocked,
+        closePeriod,
+        reopenPeriod,
         receivePayment,
         completeProject,
         reopenProject,

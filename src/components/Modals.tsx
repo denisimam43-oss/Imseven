@@ -1,6 +1,16 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useFinance } from "../store/FinanceContext";
-import { IncomeType, RekeningType, REKENING_LABEL } from "../types";
+import {
+  CATEGORY_LABEL,
+  IncomeType,
+  PaymentScheme,
+  ProjectCategory,
+  RekeningType,
+  REKENING_LABEL,
+  SCHEME_LABEL,
+} from "../types";
+import { buildPlan, dpPct, planStatus } from "../plan";
+import { fmtDay, periodInfo, periodOfTs } from "../calendar";
 import { formatRupiah, fromDateInput, toDateInput } from "../utils";
 import { analyzeProject, computeAllocation, isRealIncome, outstandingSupportFor } from "../finance";
 
@@ -82,6 +92,7 @@ function ModalBody({
     settings,
     debt,
     balances,
+    isLocked,
   } = useFinance();
   const shares = settings.shares;
 
@@ -110,6 +121,11 @@ function ModalBody({
   const [spentLab, setSpentLab] = useState("");
   const [remainingFund, setRemainingFund] = useState("");
   const [settleDate, setSettleDate] = useState("");
+
+  // Rencana proyek
+  const [projCategory, setProjCategory] = useState<ProjectCategory>("REGULER");
+  const [scheme, setScheme] = useState<PaymentScheme>("50_50");
+  const [handoverDate, setHandoverDate] = useState("");
 
   // Talangan: sumber "REK4" | "REK3" | id proyek
   const [supportSource, setSupportSource] = useState<string>("REK4");
@@ -157,9 +173,41 @@ function ModalBody({
   const lenderAnalysis = supportLender ? analyzeProject(supportLender, transactions, supports, shares) : undefined;
   const supportNum = parseNum(value);
 
+  // Tanggal paling awal yang masih boleh diisi (setelah periode yang sudah tutup buku)
+  const minDate = useMemo(() => {
+    if (!settings.closedThrough) return undefined;
+    const [y, m] = settings.closedThrough.split("-").map(Number);
+    const end = periodInfo(y, m).end;
+    return toDateInput(new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1, 12).getTime());
+  }, [settings.closedThrough]);
+
+  // Pratinjau rencana proyek dari tanggal DP
+  const planPreview = useMemo(() => {
+    if (activeModal !== "NEW_PROJECT" || isDebt || !withDp || !contractValue) return undefined;
+    return buildPlan(projCategory, scheme, contractValue, fromDateInput(date), handoverDate ? fromDateInput(handoverDate) : undefined);
+  }, [activeModal, isDebt, withDp, contractValue, projCategory, scheme, date, handoverDate]);
+
+  // Terima bayar: isi otomatis tagihan berikutnya sesuai rencana proyek
+  const payPlan = payProject ? planStatus(payProject, transactions) : undefined;
+  useEffect(() => {
+    if (activeModal !== "NEW_PAYMENT" || !payProject) return;
+    const next = planStatus(payProject, transactions)?.next;
+    if (!next) return;
+    setPayType(next.label === "DP" ? "DP" : next.label === "Termin 2" ? "TERMIN" : "PELUNASAN");
+    setPayAmount(String(next.remaining));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProjectId]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const ts = fromDateInput(date);
+    const usesDate =
+      activeModal !== "CHANGE_PASSWORD" && !(activeModal === "NEW_PROJECT" && !isDebt && !withDp);
+    if (usesDate && isLocked(ts)) {
+      return alert(
+        `Tanggal ${date} masuk periode yang sudah TUTUP BUKU. Catat dengan tanggal di periode berjalan, atau minta owner membuka kembali periode itu.`,
+      );
+    }
 
     if (activeModal === "CHANGE_PASSWORD") {
       if (password.length < 6) return alert("Kata sandi minimal 6 karakter.");
@@ -188,6 +236,7 @@ function ModalBody({
               expectedSettlementAt: settleDate ? fromDateInput(settleDate) : undefined,
             }
           : undefined,
+        { category: projCategory, scheme, handover: handoverDate ? fromDateInput(handoverDate) : undefined },
       );
       return close();
     }
@@ -277,7 +326,7 @@ function ModalBody({
 
   const dateField = (
     <Field label="Tanggal Transaksi" hint="Isi sesuai tanggal di mutasi rekening / nota.">
-      <input type="date" required value={date} max={toDateInput()} onChange={(e) => setDate(e.target.value)} className={inputCls} />
+      <input type="date" required value={date} min={minDate} max={toDateInput()} onChange={(e) => setDate(e.target.value)} className={inputCls} />
     </Field>
   );
 
@@ -319,12 +368,38 @@ function ModalBody({
                   onChange={(e) => {
                     setValue(e.target.value);
                     const v = parseNum(e.target.value);
-                    setPayAmount(v ? String(Math.round(v * 0.6)) : "");
+                    setPayAmount(v ? String(Math.round((v * dpPct(scheme)) / 100)) : "");
                   }}
                   className={`${inputCls} font-mono`}
                   placeholder="Contoh: 50000000"
                 />
               </Field>
+              {!isDebt && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <Field label="Kategori Proyek" hint="Menentukan durasi produksi & instalasi.">
+                    <select value={projCategory} onChange={(e) => setProjCategory(e.target.value as ProjectCategory)} className={inputCls}>
+                      {(Object.keys(CATEGORY_LABEL) as ProjectCategory[]).map((k) => (
+                        <option key={k} value={k}>{CATEGORY_LABEL[k]}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label="Skema Pembayaran">
+                    <select
+                      value={scheme}
+                      onChange={(e) => {
+                        const sc = e.target.value as PaymentScheme;
+                        setScheme(sc);
+                        if (contractValue) setPayAmount(String(Math.round((contractValue * dpPct(sc)) / 100)));
+                      }}
+                      className={inputCls}
+                    >
+                      {(Object.keys(SCHEME_LABEL) as PaymentScheme[]).map((k) => (
+                        <option key={k} value={k}>{SCHEME_LABEL[k]}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+              )}
               <Field label="Catatan Proyek (Opsional)">
                 <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} placeholder="Contoh: Finishing duco putih, estimasi 3 minggu" />
               </Field>
@@ -385,13 +460,34 @@ function ModalBody({
 
               {!isDebt && withDp && (
                 <>
-                  <Field label="Nominal DP yang Masuk (Rp)" hint="Otomatis 60% dari kontrak, ubah jika klien membayar berbeda.">
+                  <Field label="Nominal DP yang Masuk (Rp)" hint={`Otomatis ${dpPct(scheme)}% dari kontrak, ubah jika klien membayar berbeda.`}>
                     <input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={`${inputCls} font-mono`} />
                   </Field>
                   {dateField}
+                  {planPreview && (
+                    <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-200 text-xs text-indigo-950 space-y-1">
+                      <p className="font-bold uppercase tracking-wider text-[10px] text-indigo-700">Rencana otomatis dari tanggal DP</p>
+                      <div className="flex justify-between"><span>Produksi</span><span className="font-semibold">{fmtDay(new Date(planPreview.productionStart))} – {fmtDay(new Date(planPreview.productionEnd))}</span></div>
+                      <div className="flex justify-between"><span>Instalasi selesai</span><span className="font-semibold">{fmtDay(new Date(planPreview.installEnd))}</span></div>
+                      <div className="flex justify-between"><span>Serah terima (BAST)</span><span className="font-semibold">{fmtDay(new Date(planPreview.handover))}</span></div>
+                      <div className="flex justify-between"><span>Laba diakui di periode</span><span className="font-bold">{periodOfTs(planPreview.handover).label}</span></div>
+                      <div className="pt-1 border-t border-indigo-200 space-y-0.5">
+                        {planPreview.payments.map((x) => (
+                          <div key={x.label} className="flex justify-between">
+                            <span>{x.label} {x.pct}% · {fmtDay(new Date(x.due))}</span>
+                            <span className="font-mono">{formatRupiah(x.amount)}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <label className="block pt-1">
+                        <span className="text-[10px] text-indigo-700">Serah terima disepakati lain? (opsional)</span>
+                        <input type="date" value={handoverDate} min={date} onChange={(e) => setHandoverDate(e.target.value)} className={`${inputCls} mt-1 bg-white`} />
+                      </label>
+                    </div>
+                  )}
                   <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
                     <input type="checkbox" checked={allocate} onChange={(e) => setAllocate(e.target.checked)} />
-                    Langsung alokasikan ke Rek 2/3/4 (bahan diamankan dulu)
+                    Buat arahan alokasi ke Rek 2/3/4 (bahan diamankan dulu)
                   </label>
                   {allocate && contractValue > 0 && payNum > 0 && (
                     <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
@@ -424,6 +520,14 @@ function ModalBody({
                   <div className="flex justify-between"><span className="text-slate-500">Nilai kontrak</span><span className="font-mono font-bold">{formatRupiah(payProject.totalValue)}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">Sudah diterima</span><span className="font-mono font-bold text-emerald-600">{formatRupiah(alreadyReceived)}</span></div>
                   <div className="flex justify-between"><span className="text-slate-500">Sisa tagihan</span><span className="font-mono font-bold text-blue-600">{formatRupiah(Math.max(0, payProject.totalValue - alreadyReceived))}</span></div>
+                  {payPlan?.next && (
+                    <div className="flex justify-between pt-1 border-t border-slate-200">
+                      <span className="text-indigo-700 font-semibold">Tagihan sesuai rencana: {payPlan.next.label}</span>
+                      <span className="font-mono font-bold text-indigo-700">
+                        {formatRupiah(payPlan.next.remaining)} · {fmtDay(new Date(payPlan.next.due))}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
               <Field label="Jenis Pembayaran">
@@ -453,7 +557,7 @@ function ModalBody({
               </Field>
               <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
                 <input type="checkbox" checked={allocate} onChange={(e) => setAllocate(e.target.checked)} />
-                Langsung alokasikan ke Rek 2/3/4 (bahan diamankan dulu)
+                Buat arahan alokasi ke Rek 2/3/4 (bahan diamankan dulu)
               </label>
               {allocate && payProject && payNum > 0 && (
                 <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1.5">

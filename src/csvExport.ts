@@ -128,7 +128,7 @@ export function generateTransactionsCsv(
       rekTujuan = "-";
       keluar = t.amount;
     } else if (t.type === "TRANSFER") {
-      tipeLabel = "TRANSFER INTERNAL";
+      tipeLabel = t.pending ? "ARAHAN TRANSFER (BELUM DIKERJAKAN)" : "TRANSFER INTERNAL";
       rekSumber = t.fromAccount || "-";
       rekTujuan = t.toAccount || "-";
     }

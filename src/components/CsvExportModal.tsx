@@ -40,6 +40,8 @@ interface CsvExportModalProps {
 }
 
 const PERIOD_NAMES: Record<string, string> = {
+  THIS_CUTOFF: "Periode Ini (26-25)",
+  LAST_CUTOFF: "Periode Lalu (26-25)",
   "7_DAYS": "7 Hari Terakhir",
   THIS_MONTH: "Bulan Ini",
   "6_MONTHS": "6 Bulan Terakhir",
