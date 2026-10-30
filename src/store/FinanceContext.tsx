@@ -8,6 +8,7 @@ import React, {
 } from "react";
 import {
   Project,
+  LossCause,
   Transaction,
   RekeningType,
   FilterPeriod,
@@ -153,6 +154,7 @@ interface FinanceState {
     category: string,
     projectId?: string,
     date?: number,
+    extra?: { lossCause?: LossCause; overCap?: boolean },
   ) => void;
   addTransfer: (
     from: RekeningType,
@@ -589,10 +591,11 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     category,
     projectId,
     date = Date.now(),
+    extra,
   ) => {
     if (isLocked(date)) return;
     logAudit("TX_ADD", `Biaya ${formatRupiah(amount)}: ${description}`, {
-      after: snapshotTx({ type: "EXPENSE", amount, description, expenseCategory: category, expenseAccount: account, projectId, date }),
+      after: snapshotTx({ type: "EXPENSE", amount, description, expenseCategory: category, expenseAccount: account, projectId, date, ...extra }),
     });
     setTransactions((prev) => [
       {
@@ -605,6 +608,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         expenseAccount: account,
         expenseCategory: category,
         projectId,
+        ...(extra?.lossCause ? { lossCause: extra.lossCause } : {}),
+        ...(extra?.overCap ? { overCap: true } : {}),
       },
       ...prev,
     ]);

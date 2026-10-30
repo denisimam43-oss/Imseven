@@ -123,6 +123,8 @@ export interface Transaction {
   supportId?: string; // terkait talangan / subsidi silang
   isAdjustment?: boolean; // penyesuaian saldo (rekonsiliasi), bukan omset/biaya
   isOpening?: boolean; // saldo pembukaan sistem (juga isAdjustment, tidak masuk omset/biaya)
+  lossCause?: LossCause; // sebab biaya kontingensi (kerugian yang tidak direncanakan)
+  overCap?: boolean; // biaya kontingensi yang disetujui melewati plafon proyek
   pending?: boolean; // TRANSFER arahan yang belum dikerjakan admin di bank (belum mengubah saldo)
 }
 
@@ -168,6 +170,7 @@ export interface FinanceSettings {
   baseWorkdays: number; // hari kerja periode penuh
   closedThrough?: string; // periode terakhir yang sudah tutup buku, mis. "2026-11"
   openingDate?: number; // tanggal saldo pembukaan sistem (saldo bank pada hari itu)
+  contingencyCapPct: number; // plafon kerugian per proyek (% nilai kontrak); di atasnya perlu persetujuan
 }
 
 export const DEFAULT_SETTINGS: FinanceSettings = {
@@ -179,6 +182,7 @@ export const DEFAULT_SETTINGS: FinanceSettings = {
   slotValue: 30000000,
   slotsPerPeriod: 12,
   baseWorkdays: 26,
+  contingencyCapPct: 7,
 };
 
 /** Durasi standar (hari kerja) setelah DP / kick off. */
@@ -217,3 +221,15 @@ export interface AuditEntry {
   before?: Record<string, unknown>;
   after?: Record<string, unknown>;
 }
+
+// ---------- Kontingensi (dana tak terduga) per proyek ----------
+
+/** Sebab biaya tak terduga. Dipisah supaya terlihat dari mana kerugian paling sering datang. */
+export type LossCause = "INTERNAL" | "VENDOR" | "BISNIS" | "EKSTERNAL";
+
+export const LOSS_CAUSE_LABEL: Record<LossCause, string> = {
+  INTERNAL: "Kesalahan internal (karyawan)",
+  VENDOR: "Kesalahan tukang / vendor",
+  BISNIS: "Keputusan bisnis (mengalah demi klien)",
+  EKSTERNAL: "Kejadian eksternal (harga bahan, dll.)",
+};

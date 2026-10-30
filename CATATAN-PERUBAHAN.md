@@ -24,3 +24,11 @@ dan sesuaikan lewat ikon pensil di kartu rekening.
 
 ## Belum termasuk
 - Penyimpanan online (Firebase/Google Sheets) agar data tersinkron antar perangkat.
+
+5. **Dana tak terduga (kontingensi) per proyek** (disetujui Denis 30 Okt 2026)
+   - Satu kantong bersama (Rek 3). Per proyek ada *jatah* = 2% nilai kontrak dan *plafon* = 7% (pengaturan `contingencyCapPct`).
+   - Biaya kontingensi sekarang wajib ditautkan ke proyek dan wajib diberi sebab (kesalahan internal, tukang/vendor, keputusan bisnis, kejadian eksternal). Rekening otomatis Rek 3.
+   - Peringatan: waspada di 70% jatah, konfirmasi saat jatah habis, konfirmasi owner saat melewati plafon (ditandai `overCap`, dianggap kerugian proyek).
+   - Panel baru "Dana Tak Terduga per Proyek" di tab Pipeline: jatah, terpakai, sisa, plafon, status per proyek, rekap per sebab periode berjalan, dan kontingensi lama yang belum ditautkan.
+   - Logika murni di `src/contingency.ts`; sebab dan penanda plafon ikut tercatat di Jejak Perubahan.
+   - Belum diputuskan: sisa jatah dilepas ke profit saat serah terima atau ditahan sampai garansi selesai; evaluasi ulang 2% setelah 3 periode.

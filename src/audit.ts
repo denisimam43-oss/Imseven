@@ -47,6 +47,8 @@ const TX_FIELDS: (keyof Transaction)[] = [
   "fromAccount",
   "toAccount",
   "projectId",
+  "lossCause",
+  "overCap",
 ];
 
 /** Ringkasan isi transaksi yang layak disimpan di jejak (tanpa id internal). */
