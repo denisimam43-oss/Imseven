@@ -459,6 +459,9 @@ export function generateComprehensiveReportCsv(
   lines.push(formatCsvRow(["Laba Kotor (Gross Profit)", pl.grossProfit, "Pendapatan dikurangi HPP proyek serah terima"], d));
   lines.push(formatCsvRow(["Biaya Operasional & Umum (OpEx)", -pl.opex, "Beban operasional non-proyek pada periode"], d));
   lines.push(formatCsvRow(["Laba Bersih (Net Profit)", pl.netProfit, "Laba kotor dikurangi biaya operasional umum"], d));
+  lines.push(formatCsvRow(["Prive & Dividen Pemilik", -pl.ownerDraw, "Pengambilan pemilik, bukan beban usaha"], d));
+  lines.push(formatCsvRow(["Cadangan Pajak", -pl.taxReserve, "Disisihkan, bukan beban usaha"], d));
+  lines.push(formatCsvRow(["Laba Ditahan", pl.retained, "Laba bersih dikurangi prive/dividen dan cadangan pajak"], d));
   lines.push(formatCsvRow(["Total Saldo Kas 4 Rekening", bs.cash, "Kas di Rek 1, Rek 2, Rek 3, Rek 4"], d));
   lines.push(formatCsvRow(["Piutang Klien (Pelunasan)", bs.receivables, "Tagihan proyek selesai yang belum dilunasi"], d));
   lines.push(formatCsvRow(["Proyek Dalam Pengerjaan (WIP)", bs.wip, "Biaya yang telah keluar untuk proyek berjalan"], d));

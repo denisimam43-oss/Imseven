@@ -9,7 +9,7 @@ import {
 } from "./types";
 import { generateId } from "./utils";
 import { atNoon } from "./calendar";
-import { isHppCategory, isLabourCategory, isMaterialCategory, isOwnerCategory } from "./categories";
+import { isHppCategory, isLabourCategory, isMaterialCategory, isOwnerCategory, isReserveCategory } from "./categories";
 
 export const ACCOUNTS: RekeningType[] = ["REK1", "REK2", "REK3", "REK4"];
 
@@ -259,14 +259,18 @@ export function summarizeProject(project: Project, transactions: Transaction[]):
 /** Pengambilan pemilik (prive, dividen) bukan beban usaha. */
 export const isOwnerWithdrawal = (t: Transaction) => isOwnerCategory(t.expenseCategory);
 
+/** Cadangan pajak: dana yang disisihkan, dipisah dari beban usaha (sama seperti kontrol anggaran). */
+export const isTaxReserve = (t: Transaction) => isReserveCategory(t.expenseCategory);
+
 export interface ProfitLoss {
   revenue: number; // nilai kontrak proyek yang serah terima di periode
   projectCost: number; // seluruh biaya proyek-proyek tsb (kapan pun dikeluarkan)
   grossProfit: number;
-  opex: number; // biaya non-proyek di periode (tanpa prive/dividen)
+  opex: number; // biaya non-proyek di periode (tanpa prive/dividen dan cadangan pajak)
   netProfit: number;
   ownerDraw: number; // prive & pengambilan profit oleh pemilik di periode
-  retained: number; // laba bersih - pengambilan pemilik
+  taxReserve: number; // cadangan pajak yang disisihkan di periode (bukan beban)
+  retained: number; // laba bersih - pengambilan pemilik - cadangan pajak
   completedCount: number;
 }
 
@@ -281,11 +285,17 @@ export function computeProfitLoss(
   const ids = new Set(completed.map((p) => p.id));
   const revenue = completed.reduce((s, p) => s + p.totalValue, 0);
   const projectCost = allTransactions
-    .filter((t) => isRealExpense(t) && t.projectId && ids.has(t.projectId))
+    .filter((t) => isRealExpense(t) && !isTaxReserve(t) && t.projectId && ids.has(t.projectId))
     .reduce((s, t) => s + t.amount, 0);
-  // Biaya non-proyek. Prive & dividen adalah pengambilan pemilik, bukan beban.
+  // Biaya non-proyek. Prive & dividen adalah pengambilan pemilik, dan cadangan pajak adalah dana
+  // yang disisihkan; keduanya bukan beban usaha.
   const periodExp = allTransactions.filter((t) => isRealExpense(t) && !t.projectId && inPeriod(t.date));
-  const opex = periodExp.filter((t) => !isOwnerWithdrawal(t)).reduce((s, t) => s + t.amount, 0);
+  const opex = periodExp
+    .filter((t) => !isOwnerWithdrawal(t) && !isTaxReserve(t))
+    .reduce((s, t) => s + t.amount, 0);
+  const taxReserve = allTransactions
+    .filter((t) => isRealExpense(t) && isTaxReserve(t) && inPeriod(t.date))
+    .reduce((s, t) => s + t.amount, 0);
   const ownerDraw = allTransactions
     .filter((t) => isRealExpense(t) && isOwnerWithdrawal(t) && inPeriod(t.date))
     .reduce((s, t) => s + t.amount, 0);
@@ -297,7 +307,8 @@ export function computeProfitLoss(
     opex,
     netProfit: grossProfit - opex,
     ownerDraw,
-    retained: grossProfit - opex - ownerDraw,
+    taxReserve,
+    retained: grossProfit - opex - ownerDraw - taxReserve,
     completedCount: completed.length,
   };
 }

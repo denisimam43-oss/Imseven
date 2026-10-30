@@ -9,7 +9,7 @@ import {
   ProjectPlan,
   Transaction,
 } from "./types";
-import { isOwnerWithdrawal, isRealExpense, isRealIncome } from "./finance";
+import { isOwnerWithdrawal, isRealExpense, isRealIncome, isTaxReserve } from "./finance";
 import {
   addWorkdays,
   atNoon,
@@ -137,7 +137,7 @@ const HPP_EST_PCT = (s: FinanceSettings) => (s.shares.bahan + s.shares.labour) /
 
 function projectCost(projectId: string, transactions: Transaction[]) {
   return transactions
-    .filter((t) => t.projectId === projectId && isRealExpense(t))
+    .filter((t) => t.projectId === projectId && isRealExpense(t) && !isTaxReserve(t))
     .reduce((s, t) => s + t.amount, 0);
 }
 
@@ -170,6 +170,7 @@ export interface PeriodRecap {
   opex: number;
   netProfit: number;
   ownerDraw: number;
+  taxReserve: number; // cadangan pajak disisihkan di periode (bukan beban)
   retained: number;
   // Rencana (untuk periode yang belum selesai)
   plannedIn: { project: Project; label: string; amount: number; due: number; overdue: boolean }[];
@@ -194,8 +195,9 @@ export function computePeriodRecap(
   const exp = tx.filter(isRealExpense);
   const hpp = exp.filter((t) => isHppCategory(t.expenseCategory)).reduce((s, t) => s + t.amount, 0);
   const owner = exp.filter(isOwnerWithdrawal).reduce((s, t) => s + t.amount, 0);
+  const taxReserve = exp.filter(isTaxReserve).reduce((s, t) => s + t.amount, 0);
   const opexAll = exp
-    .filter((t) => !isHppCategory(t.expenseCategory) && !isOwnerWithdrawal(t))
+    .filter((t) => !isHppCategory(t.expenseCategory) && !isOwnerWithdrawal(t) && !isTaxReserve(t))
     .reduce((s, t) => s + t.amount, 0);
   const total = exp.reduce((s, t) => s + t.amount, 0);
 
@@ -216,7 +218,7 @@ export function computePeriodRecap(
   const pCost = handovers.reduce((s, h) => s + h.cost, 0);
   // Beban usaha periode = pengeluaran non-HPP yang tidak ditautkan ke proyek (bukan prive/dividen)
   const opex = exp
-    .filter((t) => !t.projectId && !isHppCategory(t.expenseCategory) && !isOwnerWithdrawal(t))
+    .filter((t) => !t.projectId && !isHppCategory(t.expenseCategory) && !isOwnerWithdrawal(t) && !isTaxReserve(t))
     .reduce((s, t) => s + t.amount, 0);
   const grossProfit = revenue - pCost;
   const netProfit = grossProfit - opex;
@@ -262,7 +264,8 @@ export function computePeriodRecap(
     opex,
     netProfit,
     ownerDraw: owner,
-    retained: netProfit - owner,
+    taxReserve,
+    retained: netProfit - owner - taxReserve,
     plannedIn,
     plannedInTotal: plannedIn.reduce((s, x) => s + x.amount, 0),
     plannedHandovers,
