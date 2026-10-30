@@ -8,6 +8,8 @@ import {
   Transaction,
 } from "./types";
 import { generateId } from "./utils";
+import { atNoon } from "./calendar";
+import { isHppCategory, isLabourCategory, isMaterialCategory, isOwnerCategory } from "./categories";
 
 export const ACCOUNTS: RekeningType[] = ["REK1", "REK2", "REK3", "REK4"];
 
@@ -24,7 +26,7 @@ export function isRealExpense(t: Transaction): boolean {
 }
 
 export function isHpp(t: Transaction): boolean {
-  return isRealExpense(t) && !!t.expenseCategory?.startsWith("HPP");
+  return isRealExpense(t) && isHppCategory(t.expenseCategory);
 }
 
 // ---------- Saldo rekening ----------
@@ -48,6 +50,52 @@ export function computeBalances(transactions: Transaction[]): Record<RekeningTyp
     for (const k of ACCOUNTS) b[k] += eff[k] || 0;
   }
   return b;
+}
+
+/** Saldo tiap rekening sampai akhir hari pada tanggal tersebut (transaksi sesudahnya tidak dihitung). */
+export function computeBalancesAsOf(
+  transactions: Transaction[],
+  untilTs: number,
+): Record<RekeningType, number> {
+  const end = new Date(untilTs);
+  end.setHours(23, 59, 59, 999);
+  return computeBalances(transactions.filter((t) => t.date <= end.getTime()));
+}
+
+/**
+ * Saldo pembukaan: menyamakan saldo tiap rekening di aplikasi dengan saldo bank pada
+ * sebuah tanggal. Hasilnya penyesuaian bertanda isOpening (juga isAdjustment), jadi tidak
+ * dihitung sebagai omset atau biaya. Aman dijalankan ulang: pembukaan lama diabaikan
+ * saat menghitung selisih, lalu diganti oleh pemanggil.
+ */
+export function buildOpeningTransactions(
+  existing: Transaction[],
+  targets: Record<RekeningType, number>,
+  dateTs: number,
+): Transaction[] {
+  const date = atNoon(dateTs).getTime();
+  const base = existing.filter((t) => !t.isOpening);
+  const bal = computeBalancesAsOf(base, date);
+  const out: Transaction[] = [];
+  for (const k of ACCOUNTS) {
+    const diff = Math.round(targets[k] - bal[k]);
+    if (diff === 0) continue;
+    const common = {
+      id: generateId(),
+      date,
+      createdAt: Date.now(),
+      description: `Saldo Pembukaan (${k})`,
+      amount: Math.abs(diff),
+      isAdjustment: true,
+      isOpening: true,
+    };
+    out.push(
+      diff > 0
+        ? { ...common, type: "INCOME", account: k }
+        : { ...common, type: "EXPENSE", expenseAccount: k, expenseCategory: "Saldo Pembukaan" },
+    );
+  }
+  return out;
 }
 
 /** Total yang masuk ke sebuah rekening (uang masuk langsung + transfer masuk), tanpa penyesuaian. */
@@ -209,8 +257,7 @@ export function summarizeProject(project: Project, transactions: Transaction[]):
 // ---------- Laporan laba rugi & posisi keuangan ----------
 
 /** Pengambilan pemilik (prive, dividen) bukan beban usaha. */
-export const isOwnerWithdrawal = (t: Transaction) =>
-  !!t.expenseCategory && (t.expenseCategory.includes("Prive") || t.expenseCategory.startsWith("Profit"));
+export const isOwnerWithdrawal = (t: Transaction) => isOwnerCategory(t.expenseCategory);
 
 export interface ProfitLoss {
   revenue: number; // nilai kontrak proyek yang serah terima di periode
@@ -344,10 +391,9 @@ export function outstandingSupportFor(supports: ProjectSupport[], projectId: str
 // ---------- Strategi Utang Project ----------
 
 const isMaterialCost = (t: Transaction) =>
-  t.type === "EXPENSE" && !t.supportId && !t.isAdjustment && !!t.expenseCategory?.startsWith("HPP") &&
-  !t.expenseCategory.includes("Labour");
+  t.type === "EXPENSE" && !t.supportId && !t.isAdjustment && isMaterialCategory(t.expenseCategory);
 const isLabourCost = (t: Transaction) =>
-  t.type === "EXPENSE" && !t.supportId && !t.isAdjustment && !!t.expenseCategory?.includes("Labour");
+  t.type === "EXPENSE" && !t.supportId && !t.isAdjustment && isLabourCategory(t.expenseCategory);
 
 /**
  * "Dana HPP proyek": uang yang saat ini masih dipegang untuk bahan & labour
@@ -363,7 +409,7 @@ export function projectFund(project: Project, transactions: Transaction[]): numb
       if (t.fromAccount === "REK2" && t.toAccount !== "REK2") f -= t.amount;
     } else if (t.supportId) {
       f += t.type === "INCOME" ? t.amount : -t.amount;
-    } else if (t.type === "EXPENSE" && t.expenseCategory?.startsWith("HPP")) {
+    } else if (t.type === "EXPENSE" && isHppCategory(t.expenseCategory)) {
       f -= t.amount;
     }
   }

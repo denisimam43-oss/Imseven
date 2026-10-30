@@ -11,6 +11,14 @@ import {
 } from "../types";
 import { buildPlan, dpPct, planStatus } from "../plan";
 import { fmtDay, periodInfo, periodOfTs } from "../calendar";
+import {
+  CUSTOM_OPTION,
+  DEFAULT_EXPENSE_CATEGORY,
+  categoryGroups,
+  customCategoryValue,
+  isHppCategory,
+  isOwnerCategory,
+} from "../categories";
 import { formatRupiah, fromDateInput, toDateInput } from "../utils";
 import { analyzeProject, computeAllocation, isRealIncome, outstandingSupportFor } from "../finance";
 
@@ -102,7 +110,7 @@ function ModalBody({
   const [date, setDate] = useState(toDateInput());
   const [account, setAccount] = useState<RekeningType>("REK2");
   const [toAccount, setToAccount] = useState<RekeningType>("REK2");
-  const [category, setCategory] = useState("HPP - Biaya Bahan Baku");
+  const [category, setCategory] = useState(DEFAULT_EXPENSE_CATEGORY);
   const [customCategory, setCustomCategory] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId || "");
 
@@ -260,8 +268,8 @@ function ModalBody({
     if (!num) return alert("Nilai nominal tidak valid.");
 
     if (activeModal === "NEW_EXPENSE") {
-      const finalCategory = category === "CUSTOM" ? customCategory || "Pengeluaran Lainnya" : category;
-      const takesProfit = finalCategory.includes("Prive") || finalCategory.startsWith("Profit");
+      const finalCategory = category === CUSTOM_OPTION ? customCategoryValue(customCategory) : category;
+      const takesProfit = isOwnerCategory(finalCategory);
       if (
         takesProfit &&
         debt.totalHole > 0 &&
@@ -597,37 +605,24 @@ function ModalBody({
               </Field>
               <Field label="Kategori Pengeluaran">
                 <select value={category} onChange={(e) => setCategory(e.target.value)} className={inputCls}>
-                  <optgroup label="HPP Proyek (Lock 53%)">
-                    <option value="HPP - Biaya Bahan Baku">HPP - Biaya Bahan Baku (Multipleks, HPL, Aksesoris)</option>
-                    <option value="HPP - Upah Labour (Termasuk Instalasi)">HPP - Upah Labour / Tukang & Instalasi</option>
-                  </optgroup>
-                  <optgroup label="Biaya Operasional (Opex 7%)">
-                    <option value="Opex - Biaya Operasional Kantor">Opex - Biaya Operasional Kantor (ATK, Listrik, Konsumsi)</option>
-                    <option value="Opex - Biaya Kontingensi (Overhead, Tak Terduga, Revisi)">Opex - Biaya Kontingensi (Overhead, Tak Terduga, Revisi)</option>
-                    <option value="Opex - Biaya Transportasi (Oli, Ban, Pajak, Survey)">Opex - Biaya Transportasi (Bensin, Tol, Oli, Survey)</option>
-                    <option value="Opex - Prive (Kunci Opex 1-2%)">Opex - Prive (Kunci Opex 2%)</option>
-                  </optgroup>
-                  <optgroup label="Biaya Tetap Expense (Lock 20%)">
-                    <option value="Opex Tetap - Biaya Marketing">Opex Tetap - Biaya Marketing & Iklan</option>
-                    <option value="Opex Tetap - Biaya Expense/Tetap (Utang, Salary)">Opex Tetap - Biaya Expense/Tetap (Sewa Workshop, Salary Staff)</option>
-                  </optgroup>
-                  <optgroup label="Lock Profit (Rek 4)">
-                    <option value="Profit - Pengambilan / Dividen">Profit - Pengambilan / Dividen Owner</option>
-                  </optgroup>
-                  <optgroup label="Pemisahan Modal">
-                    <option value="Tax Reserve / Pajak">Tax Reserve / Pajak</option>
-                  </optgroup>
+                  {categoryGroups().map((g) => (
+                    <optgroup key={g.group} label={g.group}>
+                      {g.items.map((c) => (
+                        <option key={c.value} value={c.value}>{c.label}</option>
+                      ))}
+                    </optgroup>
+                  ))}
                   <optgroup label="Lainnya">
-                    <option value="CUSTOM">Lainnya (Tulis Kategori Manual)</option>
+                    <option value={CUSTOM_OPTION}>Lainnya (masuk beban usaha, tulis nama)</option>
                   </optgroup>
                 </select>
               </Field>
-              {category === "CUSTOM" && (
+              {category === CUSTOM_OPTION && (
                 <Field label="Nama Kategori Baru">
                   <input required type="text" value={customCategory} onChange={(e) => setCustomCategory(e.target.value)} className={inputCls} placeholder="Contoh: Pemeliharaan Mesin Workshop" />
                 </Field>
               )}
-              <Field label="Tautkan ke Proyek" hint={category.startsWith("HPP") ? "Biaya HPP sebaiknya selalu ditautkan ke proyek agar laba proyek akurat." : undefined}>
+              <Field label="Tautkan ke Proyek" hint={isHppCategory(category) ? "Biaya HPP sebaiknya selalu ditautkan ke proyek agar laba proyek akurat." : undefined}>
                 <select value={selectedProjectId} onChange={(e) => setSelectedProjectId(e.target.value)} className={inputCls}>
                   <option value="">-- Pengeluaran Umum (Tanpa Proyek) --</option>
                   {activeProjects.map((p) => (

@@ -20,6 +20,7 @@ import {
   periodOfTs,
   shiftPeriod,
 } from "./calendar";
+import { isHppCategory } from "./categories";
 
 // ---------- Rencana proyek ----------
 
@@ -191,10 +192,10 @@ export function computePeriodRecap(
 
   const cashIn = tx.filter(isRealIncome).reduce((s, t) => s + t.amount, 0);
   const exp = tx.filter(isRealExpense);
-  const hpp = exp.filter((t) => t.expenseCategory?.startsWith("HPP")).reduce((s, t) => s + t.amount, 0);
+  const hpp = exp.filter((t) => isHppCategory(t.expenseCategory)).reduce((s, t) => s + t.amount, 0);
   const owner = exp.filter(isOwnerWithdrawal).reduce((s, t) => s + t.amount, 0);
   const opexAll = exp
-    .filter((t) => !t.expenseCategory?.startsWith("HPP") && !isOwnerWithdrawal(t))
+    .filter((t) => !isHppCategory(t.expenseCategory) && !isOwnerWithdrawal(t))
     .reduce((s, t) => s + t.amount, 0);
   const total = exp.reduce((s, t) => s + t.amount, 0);
 
@@ -215,7 +216,7 @@ export function computePeriodRecap(
   const pCost = handovers.reduce((s, h) => s + h.cost, 0);
   // Beban usaha periode = pengeluaran non-HPP yang tidak ditautkan ke proyek (bukan prive/dividen)
   const opex = exp
-    .filter((t) => !t.projectId && !t.expenseCategory?.startsWith("HPP") && !isOwnerWithdrawal(t))
+    .filter((t) => !t.projectId && !isHppCategory(t.expenseCategory) && !isOwnerWithdrawal(t))
     .reduce((s, t) => s + t.amount, 0);
   const grossProfit = revenue - pCost;
   const netProfit = grossProfit - opex;

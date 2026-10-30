@@ -11,6 +11,7 @@ import { ProjectSupportManager } from "./ProjectSupportManager";
 import { StrategyPanel } from "./StrategyPanel";
 import { ArahanPanel } from "./ArahanPanel";
 import { PeriodRecap } from "./PeriodRecap";
+import { AuditLogPanel } from "./AuditLogPanel";
 import { Modals, ModalType } from "./Modals";
 import { CsvExportModal, ReportExportType } from "./CsvExportModal";
 import {
@@ -31,6 +32,7 @@ import {
   ShieldAlert,
   LifeBuoy,
   BookLock,
+  History,
 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
 import { FilterPeriod } from "../types";
@@ -44,7 +46,7 @@ export function Dashboard() {
     setModal(m);
   };
   const [activeTab, setActiveTab] = useState<
-    "ALL" | "OVERVIEW" | "RECAP" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "EXPENSES"
+    "ALL" | "OVERVIEW" | "RECAP" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "EXPENSES" | "AUDIT"
   >("ALL");
 
   const [csvModalOpen, setCsvModalOpen] = useState(false);
@@ -437,6 +439,18 @@ export function Dashboard() {
           <FileSpreadsheet size={14} />
           Laporan Pengeluaran & Riwayat
         </button>
+        <button
+          onClick={() => setActiveTab("AUDIT")}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap",
+            activeTab === "AUDIT"
+              ? "bg-slate-900 text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100"
+          )}
+        >
+          <History size={14} />
+          Jejak Perubahan
+        </button>
       </div>
 
       {/* TAB CONTENT: OVERVIEW */}
@@ -484,6 +498,9 @@ export function Dashboard() {
           <TransactionHistory />
         </div>
       )}
+
+      {/* TAB CONTENT: JEJAK PERUBAHAN */}
+      {activeTab === "AUDIT" && <AuditLogPanel />}
 
       {/* Modals Provider */}
       <Modals activeModal={modal} close={() => setModal(null)} initialProjectId={modalProjectId} />

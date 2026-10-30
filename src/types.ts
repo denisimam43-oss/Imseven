@@ -122,6 +122,7 @@ export interface Transaction {
 
   supportId?: string; // terkait talangan / subsidi silang
   isAdjustment?: boolean; // penyesuaian saldo (rekonsiliasi), bukan omset/biaya
+  isOpening?: boolean; // saldo pembukaan sistem (juga isAdjustment, tidak masuk omset/biaya)
   pending?: boolean; // TRANSFER arahan yang belum dikerjakan admin di bank (belum mengubah saldo)
 }
 
@@ -166,6 +167,7 @@ export interface FinanceSettings {
   slotsPerPeriod: number; // kapasitas produksi penuh per periode
   baseWorkdays: number; // hari kerja periode penuh
   closedThrough?: string; // periode terakhir yang sudah tutup buku, mis. "2026-11"
+  openingDate?: number; // tanggal saldo pembukaan sistem (saldo bank pada hari itu)
 }
 
 export const DEFAULT_SETTINGS: FinanceSettings = {
@@ -184,3 +186,34 @@ export const DURATIONS: Record<ProjectCategory, { produksi: number; instalasi: n
   REGULER: { produksi: 7, instalasi: 1 },
   PREMIUM: { produksi: 10, instalasi: 3 },
 };
+
+// ---------- Jejak perubahan ----------
+
+export type AuditAction =
+  | "TX_ADD"
+  | "TX_EDIT"
+  | "TX_DELETE"
+  | "PAYMENT"
+  | "TRANSFER_CONFIRM"
+  | "PROJECT_ADD"
+  | "PROJECT_STATUS"
+  | "PROJECT_DELETE"
+  | "SUPPORT"
+  | "BALANCE_ADJUST"
+  | "OPENING_BALANCE"
+  | "PERIOD_CLOSE"
+  | "PERIOD_REOPEN"
+  | "SETTINGS"
+  | "IMPORT";
+
+/** Satu baris jejak perubahan: siapa, kapan, apa, nilai sebelum dan sesudah. */
+export interface AuditEntry {
+  id: string;
+  at: number; // waktu kejadian
+  actor: string; // pengguna yang melakukan
+  action: AuditAction;
+  summary: string; // kalimat singkat yang bisa dibaca
+  target?: string; // id transaksi / proyek terkait
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+}

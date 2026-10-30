@@ -17,6 +17,7 @@ import {
   computeBalanceSheet,
 } from "./finance";
 import { formatDate } from "./utils";
+import { isLabourCategory, isMaterialCategory } from "./categories";
 
 export type CsvDelimiter = "," | ";";
 
@@ -205,10 +206,10 @@ export function generateProjectsCsv(
     // Calculate material vs labour breakdown
     const tx = transactions.filter((t) => t.projectId === p.id && isRealExpense(t));
     const matCost = tx
-      .filter((t) => t.expenseCategory?.startsWith("HPP") && !t.expenseCategory.includes("Labour"))
+      .filter((t) => isMaterialCategory(t.expenseCategory))
       .reduce((sum, t) => sum + t.amount, 0);
     const labCost = tx
-      .filter((t) => t.expenseCategory?.includes("Labour"))
+      .filter((t) => isLabourCategory(t.expenseCategory))
       .reduce((sum, t) => sum + t.amount, 0);
 
     const taken = supports

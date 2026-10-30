@@ -3,6 +3,7 @@ import { useFinance } from "../store/FinanceContext";
 import { formatRupiah } from "../utils";
 import { Wallet, Briefcase, Building2, TrendingUp, Edit2, Check, X } from "lucide-react";
 import { RekeningType } from "../types";
+import { OpeningBalance } from "./OpeningBalance";
 
 const CARDS: {
   key: RekeningType;
@@ -136,9 +137,12 @@ export function AccountCards() {
           </div>
         ))}
       </div>
-      <p className="text-xs text-slate-500 mt-3 text-right">
-        Total kas di 4 rekening: <span className="font-bold font-mono text-slate-800">{formatRupiah(total)}</span>
-      </p>
+      <div className="flex flex-wrap items-start justify-between gap-3 mt-3">
+        <OpeningBalance />
+        <p className="text-xs text-slate-500 text-right">
+          Total kas di 4 rekening: <span className="font-bold font-mono text-slate-800">{formatRupiah(total)}</span>
+        </p>
+      </div>
     </div>
   );
 }
