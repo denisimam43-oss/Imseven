@@ -41,7 +41,9 @@ service cloud.firestore {
     // Persetujuan (approval) hanya boleh diubah ke APPROVED/REJECTED oleh Owner.
     match /transactions/{id} {
       allow read: if hasRole();
-      allow create: if hasRole();
+      // Selain Owner tidak boleh membuat transaksi yang langsung berstatus "disetujui".
+      allow create: if hasRole()
+        && (isOwner() || request.resource.data.get('approval', null) != 'APPROVED');
       allow update: if hasRole()
         && (isOwner()
             || request.resource.data.get('approval', null) == resource.data.get('approval', null)
