@@ -10,7 +10,8 @@ Langkah ini dikerjakan satu kali oleh Owner. Tanpa ini, aplikasi berjalan dalam 
 4. **Project settings > Your apps > Web (</>)**. Daftarkan aplikasi web, lalu salin konfigurasi.
 
 ## 2. Pasang aturan keamanan
-Menu **Firestore Database > Rules**. Tempel isi file `firestore.rules` dari repo ini, lalu **Publish**.
+Menu **Firestore Database > Rules**. Jika ada beberapa database, pilih dulu database yang dipakai (mis. `seven-finance`)
+di bagian atas halaman. Tempel isi file `firestore.rules` dari repo ini, lalu **Publish**.
 
 ## 3. Buat akun pengguna
 Menu **Authentication > Users > Add user**. Buat satu akun per orang (Owner, Salwa, Akuntan) dengan email
@@ -31,6 +32,7 @@ Akun yang belum punya dokumen peran akan melihat layar "Peran belum diatur" dan 
 ## 5. Isi variabel lingkungan di Vercel
 Project Vercel > Settings > Environment Variables. Isi `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`,
 `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_APP_ID` (dan dua variabel lainnya jika ada), lalu **Redeploy**.
+Jika memakai database bernama (bukan `(default)`), isi juga `VITE_FIREBASE_DATABASE_ID` dengan nama database tersebut, mis. `seven-finance`.
 Di Firebase **Authentication > Settings > Authorized domains**, tambahkan domain Vercel Anda.
 
 ## 6. Pindahkan data lama

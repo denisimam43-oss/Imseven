@@ -25,7 +25,11 @@ let dbInstance: Firestore | undefined;
 if (firebaseEnabled) {
   app = initializeApp(config);
   authInstance = getAuth(app);
-  dbInstance = initializeFirestore(app, { ignoreUndefinedProperties: true });
+  // Database bernama (mis. "seven-finance") bila bukan database bawaan "(default)".
+  const databaseId = (env.VITE_FIREBASE_DATABASE_ID as string | undefined)?.trim();
+  dbInstance = databaseId
+    ? initializeFirestore(app, { ignoreUndefinedProperties: true }, databaseId)
+    : initializeFirestore(app, { ignoreUndefinedProperties: true });
 }
 
 export const auth = authInstance as Auth;
