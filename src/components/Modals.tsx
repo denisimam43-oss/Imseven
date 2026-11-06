@@ -13,6 +13,7 @@ import { buildPlan, dpPct, planStatus } from "../plan";
 import { fmtDay, periodInfo, periodOfTs } from "../calendar";
 import { formatRupiah, fromDateInput, toDateInput } from "../utils";
 import { analyzeProject, computeAllocation, isRealIncome, outstandingSupportFor } from "../finance";
+import { useAuth } from "../auth/AuthContext";
 
 export type ModalType =
   | "NEW_PROJECT"
@@ -93,7 +94,9 @@ function ModalBody({
     debt,
     balances,
     isLocked,
+    actor,
   } = useFinance();
+  const { changePassword } = useAuth();
   const shares = settings.shares;
 
   const [name, setName] = useState("");
@@ -130,6 +133,9 @@ function ModalBody({
   // Talangan: sumber "REK4" | "REK3" | id proyek
   const [supportSource, setSupportSource] = useState<string>("REK4");
   const [toProjectId, setToProjectId] = useState(initialProjectId || "");
+
+  // Bukti transaksi (link foto / Google Drive)
+  const [evidence, setEvidence] = useState("");
 
   // Password
   const [password, setPassword] = useState("");
@@ -198,7 +204,21 @@ function ModalBody({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Bukti wajib untuk pembayaran klien dan pengeluaran (bisa dimatikan owner saat mengisi data lama)
+  const evidenceOk = (): boolean => {
+    const v = evidence.trim();
+    if (v && !/^https?:\/\//i.test(v)) {
+      alert("Link bukti harus diawali http:// atau https:// (mis. link Google Drive).");
+      return false;
+    }
+    if (settings.requireEvidence && !v) {
+      alert("Link bukti wajib diisi (nota atau bukti transfer). Unggah fotonya ke Google Drive lalu tempel linknya.");
+      return false;
+    }
+    return true;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const ts = fromDateInput(date);
     const usesDate =
@@ -210,21 +230,32 @@ function ModalBody({
     }
 
     if (activeModal === "CHANGE_PASSWORD") {
-      if (password.length < 6) return alert("Kata sandi minimal 6 karakter.");
+      if (password.length < 8) return alert("Kata sandi minimal 8 karakter.");
       if (password !== confirmPassword) return alert("Konfirmasi sandi baru tidak cocok.");
-      localStorage.setItem("adminPassword", password);
+      try {
+        await changePassword(password);
+      } catch (err) {
+        return alert(err instanceof Error ? err.message : "Gagal mengubah sandi.");
+      }
       alert("Kata sandi berhasil diubah.");
       return close();
     }
 
     if (activeModal === "NEW_PROJECT") {
       if (!contractValue) return alert("Nilai kontrak tidak valid.");
+      if ((withDp || isDebt) && payNum > 0 && !isDebt && !evidenceOk()) return;
       addProject(
         name,
         contractValue,
         notes || undefined,
         (withDp || isDebt) && payNum > 0
-          ? { amount: payNum, date: ts, incomeType: "DP", allocate: isDebt ? false : allocate }
+          ? {
+              amount: payNum,
+              date: ts,
+              incomeType: "DP",
+              allocate: isDebt ? false : allocate,
+              evidenceUrl: evidence.trim() || undefined,
+            }
           : undefined,
         isDebt
           ? {
@@ -244,6 +275,7 @@ function ModalBody({
     if (activeModal === "NEW_PAYMENT") {
       if (!payProject) return alert("Pilih proyek terlebih dahulu.");
       if (!payNum) return alert("Nominal pembayaran tidak valid.");
+      if (!evidenceOk()) return;
       receivePayment({
         projectId: payProject.id,
         amount: payNum,
@@ -252,6 +284,7 @@ function ModalBody({
         allocate,
         description: notes || undefined,
         settleSupports: payType === "PELUNASAN" && settleSupports,
+        evidenceUrl: evidence.trim() || undefined,
       });
       return close();
     }
@@ -260,6 +293,7 @@ function ModalBody({
     if (!num) return alert("Nilai nominal tidak valid.");
 
     if (activeModal === "NEW_EXPENSE") {
+      if (!evidenceOk()) return;
       const finalCategory = category === "CUSTOM" ? customCategory || "Pengeluaran Lainnya" : category;
       const takesProfit = finalCategory.includes("Prive") || finalCategory.startsWith("Profit");
       if (
@@ -270,7 +304,16 @@ function ModalBody({
         )
       )
         return;
-      addExpense(account, num, name, finalCategory, selectedProjectId || undefined, ts);
+      const needsOwner =
+        (num > settings.approvalLimit || takesProfit) && actor.role !== "OWNER";
+      if (
+        needsOwner &&
+        !window.confirm(
+          `Pengeluaran ini perlu persetujuan owner (${takesProfit ? "prive/dividen" : `di atas ${formatRupiah(settings.approvalLimit)}`}).\nTetap dicatat dengan status "Menunggu owner"?`,
+        )
+      )
+        return;
+      addExpense(account, num, name, finalCategory, selectedProjectId || undefined, ts, evidence.trim() || undefined);
     } else if (activeModal === "NEW_TRANSFER") {
       if (account === toAccount) return alert("Rekening asal dan tujuan tidak boleh sama.");
       addTransfer(account, toAccount, num, name, ts);
@@ -313,7 +356,7 @@ function ModalBody({
     NEW_EXPENSE: ["Catat Pengeluaran", "Uang keluar dari rekening sesuai pos anggaran."],
     NEW_TRANSFER: ["Transfer Antar Rekening", "Pemindahan dana antar rekening (tidak mengubah total kas)."],
     NEW_SUPPORT: ["Catat Talangan / Subsidi Silang", "Pinjaman modal kerja antar proyek yang wajib dikembalikan."],
-    CHANGE_PASSWORD: ["Ubah Kata Sandi Admin", "Perbarui kredensial akses dashboard finance."],
+    CHANGE_PASSWORD: ["Ubah Kata Sandi", "Perbarui kata sandi akun yang sedang dipakai."],
   };
   const submitLabel: Record<ModalType, string> = {
     NEW_PROJECT: "Simpan Proyek",
@@ -323,6 +366,15 @@ function ModalBody({
     NEW_SUPPORT: "Simpan Talangan",
     CHANGE_PASSWORD: "Simpan Sandi Baru",
   };
+
+  const evidenceField = (
+    <Field
+      label={settings.requireEvidence ? "Link Bukti (wajib)" : "Link Bukti"}
+      hint="Foto nota / bukti transfer diunggah ke Google Drive, lalu tempel linknya di sini."
+    >
+      <input type="url" value={evidence} onChange={(e) => setEvidence(e.target.value)} className={inputCls} placeholder="https://drive.google.com/..." />
+    </Field>
+  );
 
   const dateField = (
     <Field label="Tanggal Transaksi" hint="Isi sesuai tanggal di mutasi rekening / nota.">
@@ -347,7 +399,7 @@ function ModalBody({
           {activeModal === "CHANGE_PASSWORD" && (
             <>
               <Field label="Sandi Baru">
-                <input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} placeholder="Minimal 6 karakter" />
+                <input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} placeholder="Minimal 8 karakter" />
               </Field>
               <Field label="Konfirmasi Sandi Baru">
                 <input required type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={inputCls} placeholder="Ulangi kata sandi baru" />
@@ -464,6 +516,7 @@ function ModalBody({
                     <input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={`${inputCls} font-mono`} />
                   </Field>
                   {dateField}
+{evidenceField}
                   {planPreview && (
                     <div className="p-3 bg-indigo-50 rounded-xl border border-indigo-200 text-xs text-indigo-950 space-y-1">
                       <p className="font-bold uppercase tracking-wider text-[10px] text-indigo-700">Rencana otomatis dari tanggal DP</p>
@@ -552,6 +605,7 @@ function ModalBody({
                 <input required type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} className={`${inputCls} font-mono`} placeholder="Sesuai mutasi rekening" />
               </Field>
               {dateField}
+{evidenceField}
               <Field label="Keterangan (Opsional)">
                 <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} placeholder="Contoh: Termin 2 setelah pemasangan kabinet atas" />
               </Field>
@@ -642,6 +696,7 @@ function ModalBody({
                 <input required type="number" value={value} onChange={(e) => setValue(e.target.value)} className={`${inputCls} font-mono`} placeholder="Contoh: 3500000" />
               </Field>
               {dateField}
+{evidenceField}
             </>
           )}
 

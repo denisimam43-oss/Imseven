@@ -1,0 +1,65 @@
+rules_version = '2';
+// Seven Finance — aturan keamanan Firestore.
+// Peran disimpan di dokumen users/{uid}: { role: "OWNER" | "FINANCE" | "AKUNTAN", name: "..." }
+// Dokumen users hanya boleh dibuat/diubah lewat Firebase Console (bukan dari aplikasi).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function role() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+    function hasRole() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && role() in ['OWNER', 'FINANCE', 'AKUNTAN'];
+    }
+    function isOwner() { return hasRole() && role() == 'OWNER'; }
+    function isOwnerOrFinance() { return hasRole() && role() in ['OWNER', 'FINANCE']; }
+
+    // Pengguna hanya boleh membaca perannya sendiri. Tidak ada yang bisa menulis dari aplikasi.
+    match /users/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow write: if false;
+    }
+
+    // Pengaturan target/kontrol: semua peran membaca, hanya Owner menulis.
+    match /config/{docId} {
+      allow read: if hasRole();
+      allow write: if isOwner();
+    }
+
+    // Proyek: Owner dan Finance dapat membuat/mengubah/menghapus; Akuntan membuat dan mengubah,
+    // tetapi tidak menghapus.
+    match /projects/{id} {
+      allow read: if hasRole();
+      allow create, update: if hasRole();
+      allow delete: if isOwnerOrFinance();
+    }
+
+    // Transaksi tidak pernah dihapus (dibatalkan lewat flag voided).
+    // Persetujuan (approval) hanya boleh diubah ke APPROVED/REJECTED oleh Owner.
+    match /transactions/{id} {
+      allow read: if hasRole();
+      allow create: if hasRole();
+      allow update: if hasRole()
+        && (isOwner()
+            || request.resource.data.get('approval', null) == resource.data.get('approval', null)
+            || request.resource.data.get('approval', null) == 'PENDING');
+      allow delete: if false;
+    }
+
+    match /supports/{id} {
+      allow read: if hasRole();
+      allow create, update: if hasRole();
+      allow delete: if false;
+    }
+
+    // Log audit hanya bisa ditambah. Tidak bisa diubah atau dihapus oleh siapa pun.
+    match /auditLog/{id} {
+      allow read: if hasRole();
+      allow create: if hasRole();
+      allow update, delete: if false;
+    }
+  }
+}

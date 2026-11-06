@@ -11,6 +11,8 @@ import { ProjectSupportManager } from "./ProjectSupportManager";
 import { StrategyPanel } from "./StrategyPanel";
 import { ArahanPanel } from "./ArahanPanel";
 import { PeriodRecap } from "./PeriodRecap";
+import { AuditPanel } from "./AuditPanel";
+import { useAuth } from "../auth/AuthContext";
 import { Modals, ModalType } from "./Modals";
 import { CsvExportModal, ReportExportType } from "./CsvExportModal";
 import {
@@ -31,9 +33,11 @@ import {
   ShieldAlert,
   LifeBuoy,
   BookLock,
+  ClipboardCheck,
+  User,
 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
-import { FilterPeriod } from "../types";
+import { FilterPeriod, ROLE_LABEL } from "../types";
 import { formatRupiah, cn } from "../utils";
 
 export function Dashboard() {
@@ -44,7 +48,7 @@ export function Dashboard() {
     setModal(m);
   };
   const [activeTab, setActiveTab] = useState<
-    "ALL" | "OVERVIEW" | "RECAP" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "EXPENSES"
+    "ALL" | "OVERVIEW" | "RECAP" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "EXPENSES" | "AUDIT"
   >("ALL");
 
   const [csvModalOpen, setCsvModalOpen] = useState(false);
@@ -64,7 +68,15 @@ export function Dashboard() {
     dismissReconcile,
     exportData,
     importData,
+    actor,
+    can,
+    syncMode,
+    syncError,
+    legacyAvailable,
+    importLegacyLocal,
+    pendingApprovals,
   } = useFinance();
+  const { signOut } = useAuth();
 
   const handleExport = () => {
     const data = exportData();
@@ -101,7 +113,7 @@ export function Dashboard() {
   };
 
   const lastBackup = Number(localStorage.getItem("seven_interior_last_backup") || 0);
-  const backupStale = Date.now() - lastBackup > 7 * 24 * 3600 * 1000;
+  const backupStale = syncMode === "local" && Date.now() - lastBackup > 7 * 24 * 3600 * 1000;
   const [logoUrl, setLogoUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -175,11 +187,14 @@ export function Dashboard() {
 
         {/* Global Controls & Modals */}
         <div className="flex flex-wrap items-center gap-2.5">
+          <span
+            className="flex items-center px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-700"
+            title={`Masuk sebagai ${actor.name}`}
+          >
+            <User size={13} className="mr-1.5 text-slate-400" /> {actor.name} · {ROLE_LABEL[actor.role]}
+          </span>
           <button
-            onClick={() => {
-              sessionStorage.removeItem("finance_admin_logged_in");
-              window.location.reload();
-            }}
+            onClick={() => signOut()}
             className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-rose-600 hover:border-rose-300 hover:bg-rose-50 transition-colors uppercase tracking-wider shadow-sm"
           >
             <LogOut size={13} className="mr-1.5" /> Logout
@@ -198,13 +213,15 @@ export function Dashboard() {
           >
             <Download size={13} className="mr-1.5" /> Backup
           </button>
-          <label
-            className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-navy-300 hover:bg-slate-50 transition-colors uppercase tracking-wider shadow-sm cursor-pointer"
-            title="Pulihkan data dari file backup"
-          >
-            <Upload size={13} className="mr-1.5" /> Pulihkan
-            <input type="file" accept="application/json,.json" className="hidden" onChange={handleImport} />
-          </label>
+          {can("restore") && (
+            <label
+              className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-navy-300 hover:bg-slate-50 transition-colors uppercase tracking-wider shadow-sm cursor-pointer"
+              title="Pulihkan data dari file backup (hanya Owner)"
+            >
+              <Upload size={13} className="mr-1.5" /> Pulihkan
+              <input type="file" accept="application/json,.json" className="hidden" onChange={handleImport} />
+            </label>
+          )}
           <button
             onClick={() => openModal("CHANGE_PASSWORD")}
             className="flex items-center px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs font-bold text-slate-700 hover:border-navy-300 hover:bg-slate-50 transition-colors uppercase tracking-wider shadow-sm"
@@ -298,6 +315,42 @@ export function Dashboard() {
             className="px-4 py-1.5 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors shadow-sm self-start sm:self-auto shrink-0"
           >
             Sudah Dicocokkan
+          </button>
+        </div>
+      )}
+
+      {syncError && (
+        <div className="mb-6 p-3 bg-rose-50 border border-rose-300 rounded-2xl text-xs text-rose-800 font-semibold">
+          Sinkronisasi ke server bermasalah: {syncError}. Perubahan terbaru mungkin belum tersimpan. Periksa koneksi, lalu muat ulang halaman.
+        </div>
+      )}
+
+      {legacyAvailable && can("restore") && (
+        <div className="mb-6 p-3 bg-blue-50 border border-blue-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-blue-900">
+          <span>
+            Ditemukan data lama di browser ini yang belum ada di server. Unggah sekali agar semua pengguna memakai data yang sama.
+          </span>
+          <button
+            onClick={() => {
+              if (window.confirm("Unggah data lama dari browser ini ke server? Lakukan hanya sekali, dari perangkat yang datanya paling lengkap.")) importLegacyLocal();
+            }}
+            className="px-3 py-1.5 bg-blue-700 text-white font-bold uppercase tracking-wider rounded-xl self-start sm:self-auto shrink-0"
+          >
+            Unggah Data Lama
+          </button>
+        </div>
+      )}
+
+      {pendingApprovals.length > 0 && (
+        <div className="mb-6 p-3 bg-amber-50 border border-amber-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-900">
+          <span>
+            <b>{pendingApprovals.length}</b> pengeluaran menunggu persetujuan Owner. Tutup buku diblokir sampai selesai.
+          </span>
+          <button
+            onClick={() => setActiveTab("AUDIT")}
+            className="px-3 py-1.5 bg-amber-500 text-white font-bold uppercase tracking-wider rounded-xl self-start sm:self-auto shrink-0"
+          >
+            Buka Persetujuan
           </button>
         </div>
       )}
@@ -437,6 +490,19 @@ export function Dashboard() {
           <FileSpreadsheet size={14} />
           Laporan Pengeluaran & Riwayat
         </button>
+        <button
+          onClick={() => setActiveTab("AUDIT")}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap",
+            activeTab === "AUDIT"
+              ? "bg-slate-900 text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100"
+          )}
+        >
+          <ClipboardCheck size={14} />
+          Audit & Persetujuan
+          {pendingApprovals.length > 0 && <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />}
+        </button>
       </div>
 
       {/* TAB CONTENT: OVERVIEW */}
@@ -484,6 +550,9 @@ export function Dashboard() {
           <TransactionHistory />
         </div>
       )}
+
+      {/* TAB CONTENT: AUDIT (tidak ikut "Semua Tampilan" agar tidak terlalu panjang) */}
+      {activeTab === "AUDIT" && <AuditPanel />}
 
       {/* Modals Provider */}
       <Modals activeModal={modal} close={() => setModal(null)} initialProjectId={modalProjectId} />

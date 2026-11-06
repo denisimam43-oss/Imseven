@@ -94,10 +94,37 @@ export const INCOME_TYPE_LABEL: Record<IncomeType, string> = {
   PELUNASAN_40: "Pelunasan",
 };
 
+export type Role = "OWNER" | "FINANCE" | "AKUNTAN";
+
+export const ROLE_LABEL: Record<Role, string> = {
+  OWNER: "Owner",
+  FINANCE: "Finance & Client Relation",
+  AKUNTAN: "Akuntan / Admin Keuangan",
+};
+
+/** Persetujuan owner untuk pengeluaran di atas batas (FinanceSettings.approvalLimit). */
+export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED";
+
 export interface Transaction {
   id: string;
   date: number; // tanggal transaksi sebenarnya (bisa diisi mundur)
   createdAt?: number; // kapan dicatat di aplikasi
+  // ---- Jejak audit ----
+  createdBy?: string; // nama pengguna yang menginput
+  updatedBy?: string; // pengguna terakhir yang mengubah
+  updatedAt?: number;
+  // Transaksi tidak dihapus, hanya dibatalkan (void) beserta alasannya
+  voided?: boolean;
+  voidReason?: string;
+  voidedBy?: string;
+  voidedAt?: number;
+  // Bukti transaksi (link foto/Google Drive nota atau bukti transfer)
+  evidenceUrl?: string;
+  // Persetujuan owner (hanya untuk pengeluaran di atas batas)
+  approval?: ApprovalStatus;
+  approvedBy?: string;
+  approvedAt?: number;
+  approvalNote?: string;
   description: string;
   // INCOME   = uang masuk ke salah satu rekening
   // EXPENSE  = uang keluar dari salah satu rekening
@@ -166,6 +193,8 @@ export interface FinanceSettings {
   slotsPerPeriod: number; // kapasitas produksi penuh per periode
   baseWorkdays: number; // hari kerja periode penuh
   closedThrough?: string; // periode terakhir yang sudah tutup buku, mis. "2026-11"
+  approvalLimit: number; // pengeluaran di atas nominal ini wajib persetujuan owner
+  requireEvidence: boolean; // wajib mengisi link bukti untuk pengeluaran & pembayaran klien
 }
 
 export const DEFAULT_SETTINGS: FinanceSettings = {
@@ -177,7 +206,24 @@ export const DEFAULT_SETTINGS: FinanceSettings = {
   slotValue: 30000000,
   slotsPerPeriod: 12,
   baseWorkdays: 26,
+  approvalLimit: 5000000,
+  requireEvidence: true,
 };
+
+// ---------- Log aktivitas (audit trail) ----------
+
+export type AuditEntity = "TRANSAKSI" | "PROYEK" | "TALANGAN" | "PERIODE" | "DATA" | "PENGATURAN" | "AKUN";
+
+export interface AuditEntry {
+  id: string;
+  ts: number;
+  by: string; // nama pengguna
+  role: Role;
+  action: string; // mis. "Catat pengeluaran", "Batalkan transaksi"
+  entity: AuditEntity;
+  entityId?: string;
+  summary: string;
+}
 
 /** Durasi standar (hari kerja) setelah DP / kick off. */
 export const DURATIONS: Record<ProjectCategory, { produksi: number; instalasi: number }> = {

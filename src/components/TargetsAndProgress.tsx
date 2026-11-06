@@ -27,7 +27,7 @@ function Bar({ pct, done }: { pct: number; done: boolean }) {
 }
 
 export function TargetsAndProgress() {
-  const { settings, updateSettings, marketTarget: mt, transactions, debt, projects, currentPeriod: cp } = useFinance();
+  const { settings, updateSettings, marketTarget: mt, transactions, debt, projects, currentPeriod: cp, can } = useFinance();
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({
     monthlyExpense: String(settings.monthlyExpense),
@@ -84,12 +84,14 @@ export function TargetsAndProgress() {
             </p>
           </div>
         </div>
-        <button
-          onClick={() => setEditing((v) => !v)}
-          className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 self-start"
-        >
-          <Settings2 size={14} /> Atur angka
-        </button>
+        {can("editSettings") && (
+          <button
+            onClick={() => setEditing((v) => !v)}
+            className="flex items-center gap-1.5 px-3 py-2 border border-slate-200 rounded-xl text-xs font-bold text-slate-600 hover:bg-slate-50 self-start"
+          >
+            <Settings2 size={14} /> Atur angka
+          </button>
+        )}
       </div>
 
       {editing && (

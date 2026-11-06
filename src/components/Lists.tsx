@@ -46,6 +46,7 @@ export function ProjectList({ onPayment }: { onPayment: (projectId: string) => v
     deleteProject,
     setProjectPlan,
     isLocked,
+    can,
   } = useFinance();
   const [filter, setFilter] = useState<ProjectFilter>("ALL");
   const [planEdit, setPlanEdit] = useState<Project | null>(null);
@@ -286,6 +287,7 @@ export function ProjectList({ onPayment }: { onPayment: (projectId: string) => v
                       <Undo2 size={16} />
                     </button>
                   )}
+                  {can("archiveProject") && (
                   <button
                     onClick={() => archiveProject(project.id, !project.archived)}
                     className="p-2 text-slate-400 hover:text-navy-600 hover:bg-navy-50 rounded-xl transition-colors"
@@ -293,6 +295,8 @@ export function ProjectList({ onPayment }: { onPayment: (projectId: string) => v
                   >
                     {project.archived ? <ArchiveRestore size={16} /> : <Archive size={16} />}
                   </button>
+                  )}
+                  {can("deleteProject") && (
                   <button
                     onClick={() => {
                       if (!window.confirm(`Hapus proyek "${project.name}"?`)) return;
@@ -307,6 +311,7 @@ export function ProjectList({ onPayment }: { onPayment: (projectId: string) => v
                   >
                     <Trash2 size={16} />
                   </button>
+                  )}
                 </div>
               </div>
             </li>
@@ -461,13 +466,14 @@ function TypeBadge({ t }: { t: Transaction }) {
 }
 
 export function TransactionHistory() {
-  const { filteredTransactions, deleteTransaction, updateTransaction, projects, isLocked } = useFinance();
+  const { filteredTransactions, voidTransaction, updateTransaction, projects, isLocked, can } = useFinance();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDesc, setEditDesc] = useState("");
   const [editAmount, setEditAmount] = useState(0);
   const [editDate, setEditDate] = useState("");
   const [editCategory, setEditCategory] = useState("");
   const [editAccount, setEditAccount] = useState<RekeningType>("REK1");
+  const [editEvidence, setEditEvidence] = useState("");
   const [showTransfers, setShowTransfers] = useState(true);
   const [limit, setLimit] = useState(50);
 
@@ -481,10 +487,16 @@ export function TransactionHistory() {
     setEditDate(toDateInput(t.date));
     setEditCategory(t.expenseCategory || "");
     setEditAccount(t.expenseAccount || "REK1");
+    setEditEvidence(t.evidenceUrl || "");
   };
 
   const handleSave = (t: Transaction) => {
     const data: Partial<Transaction> = { description: editDesc, amount: editAmount };
+    if (editEvidence.trim() !== (t.evidenceUrl || "")) {
+      if (editEvidence.trim() && !/^https?:\/\//i.test(editEvidence.trim()))
+        return alert("Link bukti harus diawali http:// atau https://");
+      data.evidenceUrl = editEvidence.trim() || undefined;
+    }
     if (editDate !== toDateInput(t.date)) data.date = fromDateInput(editDate);
     if (data.date !== undefined && isLocked(data.date))
       return alert("Tanggal baru masuk periode yang sudah tutup buku. Pilih tanggal di periode berjalan.");
@@ -551,7 +563,10 @@ export function TransactionHistory() {
                   </td>
                   <td className="px-6 py-3 font-semibold text-slate-700">
                     {editing ? (
-                      <input type="text" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className="w-full px-2 py-1 border border-slate-200 rounded text-xs" />
+                      <div className="flex flex-col gap-1.5">
+                        <input type="text" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} className="w-full px-2 py-1 border border-slate-200 rounded text-xs" />
+                        <input type="url" value={editEvidence} onChange={(e) => setEditEvidence(e.target.value)} className="w-full px-2 py-1 border border-slate-200 rounded text-xs" placeholder="Link bukti (nota / bukti transfer)" />
+                      </div>
                     ) : (
                       <div>
                         <span className={cn(isChild && "text-slate-500 font-medium")}>{t.description}</span>
@@ -563,12 +578,36 @@ export function TransactionHistory() {
                             Arahan
                           </span>
                         )}
+                        {t.approval === "PENDING" && (
+                          <span className="ml-2 text-[10px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded" title="Menunggu persetujuan owner">
+                            Menunggu owner
+                          </span>
+                        )}
+                        {t.approval === "REJECTED" && (
+                          <span className="ml-2 text-[10px] font-bold text-rose-800 bg-rose-100 px-1.5 py-0.5 rounded" title={t.approvalNote || "Ditolak owner"}>
+                            Ditolak owner
+                          </span>
+                        )}
                         {(() => {
                           const pn = projectName(t.projectId);
                           return pn && !t.description.includes(pn) ? (
                             <span className="block text-[10px] text-slate-400 font-medium">{pn}</span>
                           ) : null;
                         })()}
+                        <span className="block text-[10px] text-slate-400 font-medium">
+                          {t.createdBy ? `dicatat ${t.createdBy}` : ""}
+                          {t.updatedBy ? ` · diubah ${t.updatedBy}` : ""}
+                          {t.evidenceUrl ? (
+                            <>
+                              {t.createdBy ? " · " : ""}
+                              <a href={t.evidenceUrl} target="_blank" rel="noreferrer" className="text-navy-600 underline">
+                                bukti
+                              </a>
+                            </>
+                          ) : !t.isAdjustment && !t.parentId && !t.supportId && t.type !== "TRANSFER" ? (
+                            <span className="text-rose-500">{t.createdBy ? " · " : ""}tanpa bukti</span>
+                          ) : null}
+                        </span>
                       </div>
                     )}
                   </td>
@@ -626,17 +665,24 @@ export function TransactionHistory() {
                           <button onClick={() => handleEdit(t)} className="text-navy-600 hover:text-navy-800 p-1 hover:bg-navy-50 rounded transition-colors" title="Edit Transaksi">
                             <Edit2 size={14} />
                           </button>
+                          {can("void") && (
                           <button
                             onClick={() => {
                               const msg =
-                                t.type === "INCOME" ? "Hapus uang masuk ini beserta transfer alokasinya?" : "Hapus transaksi ini?";
-                              if (window.confirm(msg)) deleteTransaction(t.id);
+                                t.type === "INCOME"
+                                  ? "Batalkan uang masuk ini beserta transfer alokasinya?\n\nTulis alasan pembatalan (wajib):"
+                                  : "Batalkan transaksi ini?\n\nTulis alasan pembatalan (wajib):";
+                              const reason = window.prompt(msg);
+                              if (reason === null) return;
+                              const res = voidTransaction(t.id, reason);
+                              if (!res.ok) alert(res.message);
                             }}
                             className="text-rose-500 hover:text-rose-700 p-1 hover:bg-rose-50 rounded transition-colors"
-                            title="Hapus Transaksi"
+                            title="Batalkan Transaksi (dengan alasan)"
                           >
                             <Trash2 size={14} />
                           </button>
+                          )}
                         </>
                       )}
                     </div>

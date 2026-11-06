@@ -3,11 +3,15 @@ import React, {
   useContext,
   useState,
   useEffect,
+  useRef,
   ReactNode,
   useMemo,
 } from "react";
 import {
+  AuditEntity,
+  AuditEntry,
   Project,
+  Role,
   Transaction,
   RekeningType,
   FilterPeriod,
@@ -19,8 +23,13 @@ import {
   PaymentScheme,
 } from "../types";
 import { buildPlan } from "../plan";
+import { LoadingScreen } from "../components/LoginScreen";
 import { PeriodInfo, inPeriod, periodCapacity, periodInfo, periodOfTs, shiftPeriod } from "../calendar";
-import { generateId } from "../utils";
+import { formatRupiah, generateId } from "../utils";
+import { useAuth } from "../auth/AuthContext";
+import { firebaseEnabled } from "../firebase";
+import { Action, ACTION_DENIED, roleCan } from "../permissions";
+import { useCollectionSync, useDocSync } from "./sync";
 import {
   analyzeProject,
   buildAllocationTransfers,
@@ -45,6 +54,16 @@ const KEY_SUPPORTS = "seven_interior_supports_v1";
 const KEY_RECONCILE = "seven_interior_needs_reconcile";
 const KEY_BACKUP_V1 = "seven_interior_backup_pre_v2";
 const KEY_SETTINGS = "seven_interior_settings_v1";
+const KEY_AUDIT = "seven_interior_audit_v1";
+
+function mergeSettings(saved: Partial<FinanceSettings> | undefined): FinanceSettings {
+  const sv = saved || {};
+  return {
+    ...DEFAULT_SETTINGS,
+    ...sv,
+    shares: { ...DEFAULT_SETTINGS.shares, ...(sv.shares || {}) },
+  };
+}
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -63,6 +82,7 @@ export interface PaymentInput {
   allocate: boolean; // langsung pindahkan dari Rek 1 ke Rek 2/3/4 sesuai SOP
   description?: string;
   settleSupports?: boolean; // kembalikan talangan proyek ini sekaligus
+  evidenceUrl?: string; // link bukti transfer klien
 }
 
 export interface DebtProjectInput {
@@ -88,9 +108,24 @@ export interface BackupData {
   transactions: Transaction[];
   supports: ProjectSupport[];
   settings?: FinanceSettings;
+  auditLog?: AuditEntry[]; // hanya informasi; log aktivitas tidak ditimpa saat pemulihan
 }
 
 interface FinanceState {
+  // ---- Pengguna, peran, dan sinkronisasi ----
+  actor: { name: string; role: Role; email: string };
+  can: (action: Action) => boolean;
+  syncMode: "firebase" | "local";
+  syncError?: string;
+  legacyAvailable: boolean; // ada data lama di browser ini yang bisa diunggah ke penyimpanan online
+  importLegacyLocal: () => { ok: boolean; message: string };
+  // ---- Audit, bukti, persetujuan ----
+  auditLog: AuditEntry[];
+  voidedTransactions: Transaction[];
+  voidTransaction: (id: string, reason: string) => { ok: boolean; message: string };
+  pendingApprovals: Transaction[]; // pengeluaran menunggu / ditolak owner
+  approveExpense: (id: string, note?: string) => void;
+  rejectExpense: (id: string, note: string) => void;
   projects: Project[]; // semua proyek termasuk arsip
   activeProjects: Project[]; // proyek yang tidak diarsipkan
   transactions: Transaction[];
@@ -140,6 +175,7 @@ interface FinanceState {
     category: string,
     projectId?: string,
     date?: number,
+    evidenceUrl?: string,
   ) => void;
   addTransfer: (
     from: RekeningType,
@@ -173,9 +209,8 @@ interface FinanceState {
     totalOutstandingSupport: number;
   };
   filteredBalances: { totalOmset: number; opexCollected: number };
-  deleteTransaction: (id: string) => void;
   updateTransaction: (id: string, data: Partial<Transaction>) => void;
-  adjustBalance: (account: RekeningType, newBalance: number) => void;
+  adjustBalance: (account: RekeningType, newBalance: number, reason?: string) => void;
   needsReconcile: boolean;
   dismissReconcile: () => void;
   exportData: () => BackupData;
@@ -185,13 +220,22 @@ interface FinanceState {
 const FinanceContext = createContext<FinanceState | undefined>(undefined);
 
 export function FinanceProvider({ children }: { children: ReactNode }) {
-  const [projects, setProjects] = useState<Project[]>(() => readJson(KEY_PROJECTS, []));
+  const authUser = useAuth().user as NonNullable<ReturnType<typeof useAuth>["user"]>;
+  const actor = useMemo(
+    () => ({ name: authUser.name, role: authUser.role, email: authUser.email }),
+    [authUser.name, authUser.role, authUser.email],
+  );
+  const can = (action: Action) => roleCan(actor.role, action);
+
+  const [projects, setProjects] = useState<Project[]>(() => (firebaseEnabled ? [] : readJson(KEY_PROJECTS, [])));
 
   const [needsReconcile, setNeedsReconcile] = useState<boolean>(
-    () => localStorage.getItem(KEY_RECONCILE) === "true",
+    () => !firebaseEnabled && localStorage.getItem(KEY_RECONCILE) === "true",
   );
 
-  const [transactions, setTransactions] = useState<Transaction[]>(() => {
+  // Semua transaksi termasuk yang dibatalkan (void). Yang dibatalkan tidak ikut perhitungan.
+  const [rawTx, setRawTx] = useState<Transaction[]>(() => {
+    if (firebaseEnabled) return [];
     const saved = readJson<Transaction[]>(KEY_TRANSACTIONS, []);
     if (needsMigration(saved)) {
       // Simpan cadangan data lama sebelum dikonversi
@@ -214,20 +258,124 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     return saved;
   });
 
-  const [supports, setSupports] = useState<ProjectSupport[]>(() => readJson(KEY_SUPPORTS, []));
+  // Data lama di browser ini (sebelum penyimpanan online), ditawarkan untuk diunggah sekali.
+  const legacyRef = useRef<{
+    projects: Project[];
+    transactions: Transaction[];
+    supports: ProjectSupport[];
+    settings: FinanceSettings;
+  } | null>(null);
+  if (firebaseEnabled && legacyRef.current === null) {
+    const lp = readJson<Project[]>(KEY_PROJECTS, []);
+    const lt = readJson<Transaction[]>(KEY_TRANSACTIONS, []);
+    if (lp.length > 0 || lt.length > 0) {
+      legacyRef.current = {
+        projects: lp,
+        transactions: needsMigration(lt) ? migrateTransactions(lt) : lt,
+        supports: readJson<ProjectSupport[]>(KEY_SUPPORTS, []),
+        settings: mergeSettings(readJson<Partial<FinanceSettings>>(KEY_SETTINGS, {})),
+      };
+    }
+  }
+
+  const [supports, setSupports] = useState<ProjectSupport[]>(() =>
+    firebaseEnabled ? [] : readJson(KEY_SUPPORTS, []),
+  );
+  const [auditLog, setAuditLog] = useState<AuditEntry[]>(() => (firebaseEnabled ? [] : readJson(KEY_AUDIT, [])));
 
   const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>("THIS_CUTOFF");
-  const [settings, setSettings] = useState<FinanceSettings>(() => {
-    const saved = readJson<Partial<FinanceSettings>>(KEY_SETTINGS, {});
-    return {
-      ...DEFAULT_SETTINGS,
-      ...saved,
-      shares: { ...DEFAULT_SETTINGS.shares, ...(saved.shares || {}) },
-    };
+  const [settings, setSettings] = useState<FinanceSettings>(() =>
+    mergeSettings(firebaseEnabled ? undefined : readJson<Partial<FinanceSettings>>(KEY_SETTINGS, {})),
+  );
+
+  // ---------- Sinkronisasi online ----------
+  const projSync = useCollectionSync<Project>({
+    name: "projects",
+    items: projects,
+    setItems: setProjects,
+    enabled: firebaseEnabled,
+    canWrite: true,
+    sort: (a, b) => b.createdAt - a.createdAt,
   });
+  const txSync = useCollectionSync<Transaction>({
+    name: "transactions",
+    items: rawTx,
+    setItems: setRawTx,
+    enabled: firebaseEnabled,
+    canWrite: true,
+  });
+  const supSync = useCollectionSync<ProjectSupport>({
+    name: "supports",
+    items: supports,
+    setItems: setSupports,
+    enabled: firebaseEnabled,
+    canWrite: true,
+    sort: (a, b) => b.date - a.date,
+  });
+  const auditSync = useCollectionSync<AuditEntry>({
+    name: "auditLog",
+    items: auditLog,
+    setItems: setAuditLog,
+    enabled: firebaseEnabled,
+    canWrite: true,
+    sort: (a, b) => b.ts - a.ts,
+    recent: { field: "ts", max: 1000 },
+  });
+  const settingsSync = useDocSync<FinanceSettings>({
+    path: ["config", "settings"],
+    value: settings,
+    setValue: (raw) => setSettings(mergeSettings(raw as Partial<FinanceSettings> | undefined)),
+    enabled: firebaseEnabled,
+    canWrite: roleCan(actor.role, "editSettings"),
+  });
+  const syncReady =
+    !firebaseEnabled ||
+    (projSync.hydrated && txSync.hydrated && supSync.hydrated && auditSync.hydrated && settingsSync.hydrated);
+  const syncError = projSync.error || txSync.error || supSync.error || auditSync.error || settingsSync.error;
+
+  // ---------- Jejak audit ----------
+  const logAction = (action: string, entity: AuditEntity, summary: string, entityId?: string) => {
+    const entry: AuditEntry = {
+      id: generateId(),
+      ts: Date.now(),
+      by: actor.name,
+      role: actor.role,
+      action,
+      entity,
+      entityId,
+      summary,
+    };
+    setAuditLog((prev) => [entry, ...prev]);
+  };
+
+  const denied = (action: Action) => {
+    window.alert(ACTION_DENIED[action]);
+  };
+
+  // Setiap transaksi baru diberi nama penginput; yang diubah diberi nama pengubah.
+  const stamp = (prev: Transaction[], next: Transaction[]): Transaction[] => {
+    const before = new Map(prev.map((t) => [t.id, t]));
+    const now = Date.now();
+    return next.map((t) => {
+      const old = before.get(t.id);
+      if (!old) return t.createdBy ? t : { ...t, createdBy: actor.name };
+      if (old === t) return t;
+      return { ...t, updatedBy: actor.name, updatedAt: now };
+    });
+  };
+  const setTransactions = (updater: (prev: Transaction[]) => Transaction[]) =>
+    setRawTx((prev) => stamp(prev, updater(prev)));
+
+  const transactions = useMemo(() => rawTx.filter((t) => !t.voided), [rawTx]);
+  const voidedTransactions = useMemo(
+    () => rawTx.filter((t) => t.voided).sort((a, b) => (b.voidedAt || 0) - (a.voidedAt || 0)),
+    [rawTx],
+  );
 
   const updateSettings: FinanceState["updateSettings"] = (data) => {
+    if (!can("editSettings")) return denied("editSettings");
     setSettings((prev) => ({ ...prev, ...data, shares: { ...prev.shares, ...(data.shares || {}) } }));
+    logAction("Ubah pengaturan keuangan", "PENGATURAN", Object.keys(data).join(", "));
   };
 
   // Periode yang sudah tutup buku tidak boleh berubah lagi
@@ -235,24 +383,28 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Status ini bisa diset saat migrasi di inisialisasi state transaksi
-    if (localStorage.getItem(KEY_RECONCILE) === "true") setNeedsReconcile(true);
+    if (!firebaseEnabled && localStorage.getItem(KEY_RECONCILE) === "true") setNeedsReconcile(true);
   }, []);
 
+  // Penyimpanan lokal hanya dipakai pada mode lokal (tanpa Firebase)
   useEffect(() => {
-    localStorage.setItem(KEY_PROJECTS, JSON.stringify(projects));
+    if (!firebaseEnabled) localStorage.setItem(KEY_PROJECTS, JSON.stringify(projects));
   }, [projects]);
   useEffect(() => {
-    localStorage.setItem(KEY_TRANSACTIONS, JSON.stringify(transactions));
-  }, [transactions]);
+    if (!firebaseEnabled) localStorage.setItem(KEY_TRANSACTIONS, JSON.stringify(rawTx));
+  }, [rawTx]);
   useEffect(() => {
-    localStorage.setItem(KEY_SUPPORTS, JSON.stringify(supports));
+    if (!firebaseEnabled) localStorage.setItem(KEY_SUPPORTS, JSON.stringify(supports));
   }, [supports]);
   useEffect(() => {
-    localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings));
+    if (!firebaseEnabled) localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings));
   }, [settings]);
+  useEffect(() => {
+    if (!firebaseEnabled) localStorage.setItem(KEY_AUDIT, JSON.stringify(auditLog.slice(0, 1000)));
+  }, [auditLog]);
 
   const dismissReconcile = () => {
-    localStorage.removeItem(KEY_RECONCILE);
+    if (!firebaseEnabled) localStorage.removeItem(KEY_RECONCILE);
     setNeedsReconcile(false);
   };
 
@@ -275,6 +427,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       projectId: project.id,
       incomeType: input.incomeType,
       account: "REK1",
+      evidenceUrl: input.evidenceUrl?.trim() || undefined,
     };
     if (!input.allocate) return [income];
     // Utang project: pelunasan mengisi kebutuhan proyeknya dulu (waterfall)
@@ -331,6 +484,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         debtInput.spentMaterial + debtInput.spentLabour + debtInput.remainingFund;
     }
     setProjects((prev) => [newProject, ...prev]);
+    logAction(
+      "Buat proyek",
+      "PROYEK",
+      `${name} · kontrak ${formatRupiah(totalValue)}${debtInput ? " · utang project" : ""}`,
+      newProject.id,
+    );
 
     const opening: Transaction[] = [];
     if (debtInput) {
@@ -418,6 +577,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   const confirmTransfers: FinanceState["confirmTransfers"] = (ids, date = Date.now()) => {
     const set = new Set(ids);
+    const total = rawTx.filter((t) => set.has(t.id) && t.pending).reduce((sum, t) => sum + t.amount, 0);
+    if (total > 0) logAction("Konfirmasi arahan transfer", "TRANSAKSI", `${ids.length} arahan · total ${formatRupiah(total)}`);
     // Tanggal = hari admin benar-benar transfer di bank (tidak boleh masuk periode yang sudah ditutup)
     setTransactions((prev) =>
       prev.map((t) =>
@@ -469,6 +630,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       }
     }
     setTransactions((prev) => [...buildPayment(project, input, prev), ...extra, ...prev]);
+    logAction(
+      "Catat pembayaran klien",
+      "TRANSAKSI",
+      `${project.name} · ${input.incomeType} ${formatRupiah(input.amount)}`,
+      project.id,
+    );
   };
 
   const completeProject: FinanceState["completeProject"] = (projectId, date) => {
@@ -476,6 +643,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setProjects((prev) =>
       prev.map((p) => (p.id === projectId ? { ...p, status: "COMPLETED", completedAt: date } : p)),
     );
+    logAction("Serah terima proyek", "PROYEK", projects.find((p) => p.id === projectId)?.name || projectId, projectId);
   };
 
   const reopenProject: FinanceState["reopenProject"] = (projectId) => {
@@ -486,10 +654,13 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         p.id === projectId ? { ...p, status: "ONGOING", completedAt: undefined } : p,
       ),
     );
+    logAction("Batalkan serah terima", "PROYEK", p0?.name || projectId, projectId);
   };
 
   const archiveProject: FinanceState["archiveProject"] = (projectId, archived) => {
+    if (!can("archiveProject")) return denied("archiveProject");
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, archived } : p)));
+    logAction(archived ? "Arsipkan proyek" : "Pulihkan proyek dari arsip", "PROYEK", projects.find((p) => p.id === projectId)?.name || projectId, projectId);
   };
 
   const deleteProject: FinanceState["deleteProject"] = (id) => {
@@ -497,6 +668,11 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       transactions.some((t) => t.projectId === id) ||
       supports.some((s) => s.fromProjectId === id || s.toProjectId === id);
     if (hasData) return false;
+    if (!can("deleteProject")) {
+      denied("deleteProject");
+      return false;
+    }
+    logAction("Hapus proyek (belum ada transaksi)", "PROYEK", projects.find((p) => p.id === id)?.name || id, id);
     setProjects((prev) => prev.filter((p) => p.id !== id));
     return true;
   };
@@ -510,22 +686,37 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     category,
     projectId,
     date = Date.now(),
+    evidenceUrl,
   ) => {
     if (isLocked(date)) return;
+    // Pengeluaran besar dan prive/dividen perlu persetujuan owner (owner sendiri otomatis disetujui)
+    const isWithdrawal = category.includes("Prive") || category.startsWith("Profit");
+    const needsApproval = amount > settings.approvalLimit || isWithdrawal;
+    const byOwner = actor.role === "OWNER";
+    const now = Date.now();
     setTransactions((prev) => [
       {
         id: generateId(),
         date,
-        createdAt: Date.now(),
+        createdAt: now,
         description,
         type: "EXPENSE",
         amount,
         expenseAccount: account,
         expenseCategory: category,
         projectId,
+        evidenceUrl: evidenceUrl?.trim() || undefined,
+        approval: needsApproval ? (byOwner ? "APPROVED" : "PENDING") : undefined,
+        approvedBy: needsApproval && byOwner ? actor.name : undefined,
+        approvedAt: needsApproval && byOwner ? now : undefined,
       },
       ...prev,
     ]);
+    logAction(
+      needsApproval && !byOwner ? "Catat pengeluaran (menunggu persetujuan owner)" : "Catat pengeluaran",
+      "TRANSAKSI",
+      `${description} · ${category} · ${formatRupiah(amount)}`,
+    );
   };
 
   const addTransfer: FinanceState["addTransfer"] = (
@@ -551,6 +742,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       },
       ...prev,
     ]);
+    logAction("Transfer antar rekening", "TRANSAKSI", `${from} → ${to} · ${formatRupiah(amount)}${description ? ` · ${description}` : ""}`);
   };
 
   // ---------- Talangan ----------
@@ -609,6 +801,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     };
     setSupports((prev) => [newSupport, ...prev]);
     setTransactions((prev) => [borrowerIncome, lenderExpense, ...prev]);
+    logAction("Catat talangan", "TALANGAN", `${fromProjectName} → ${toProjectName} · ${formatRupiah(amount)}`, supportId);
   };
 
   const settleSupport: FinanceState["settleSupport"] = (supportId, date = Date.now()) => {
@@ -618,17 +811,29 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       prev.map((s) => (s.id === supportId ? { ...s, status: "RETURNED", returnedAt: date } : s)),
     );
     setTransactions((prev) => [...settleSupportTx(sup, date), ...prev]);
+    logAction("Talangan dikembalikan", "TALANGAN", `${sup.fromProjectName} ← ${sup.toProjectName} · ${formatRupiah(sup.amount)}`, supportId);
   };
 
   const deleteSupport: FinanceState["deleteSupport"] = (supportId) => {
+    if (!can("void")) return denied("void");
     if (transactions.some((t) => t.supportId === supportId && isLocked(t.date))) return;
+    const sup = supports.find((s) => s.id === supportId);
+    const now = Date.now();
     setSupports((prev) => prev.filter((s) => s.id !== supportId));
-    setTransactions((prev) => prev.filter((t) => t.supportId !== supportId));
+    // Transaksi talangan dibatalkan (void), tidak dihapus, agar jejaknya tetap ada
+    setTransactions((prev) =>
+      prev.map((t) =>
+        t.supportId === supportId && !t.voided
+          ? { ...t, voided: true, voidReason: "Talangan dihapus", voidedBy: actor.name, voidedAt: now }
+          : t,
+      ),
+    );
+    logAction("Hapus talangan", "TALANGAN", sup ? `${sup.fromProjectName} → ${sup.toProjectName} · ${formatRupiah(sup.amount)}` : supportId, supportId);
   };
 
   // ---------- Rekonsiliasi saldo ----------
 
-  const adjustBalance: FinanceState["adjustBalance"] = (account, newBalance) => {
+  const adjustBalance: FinanceState["adjustBalance"] = (account, newBalance, reason) => {
     const current = computeBalances(transactions)[account];
     const diff = Math.round(newBalance - current);
     if (diff === 0) return;
@@ -636,7 +841,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       id: generateId(),
       date: Date.now(),
       createdAt: Date.now(),
-      description: `Penyesuaian Saldo Manual (${account})`,
+      description: `Penyesuaian Saldo Manual (${account})${reason ? ` - ${reason}` : ""}`,
       amount: Math.abs(diff),
       isAdjustment: true,
     };
@@ -645,21 +850,60 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         ? { ...base, type: "INCOME", account }
         : { ...base, type: "EXPENSE", expenseAccount: account, expenseCategory: "Penyesuaian Manual" };
     setTransactions((prev) => [tx, ...prev]);
+    logAction(
+      "Penyesuaian saldo",
+      "TRANSAKSI",
+      `${account}: ${formatRupiah(current)} → ${formatRupiah(newBalance)} (selisih ${formatRupiah(diff)})${reason ? ` · ${reason}` : ""}`,
+    );
   };
 
-  // ---------- Edit / hapus transaksi ----------
+  // ---------- Edit / batalkan transaksi ----------
 
-  const deleteTransaction: FinanceState["deleteTransaction"] = (id) => {
-    // Menghapus uang masuk juga menghapus transfer alokasinya
+  const voidTransaction: FinanceState["voidTransaction"] = (id, reason) => {
+    if (!can("void")) return { ok: false, message: ACTION_DENIED.void };
+    const why = reason.trim();
+    if (why.length < 5) return { ok: false, message: "Alasan pembatalan wajib diisi (minimal 5 karakter)." };
     const t0 = transactions.find((t) => t.id === id);
-    if (!t0 || isLocked(t0.date)) return;
-    setTransactions((prev) => prev.filter((t) => t.id !== id && t.parentId !== id));
+    if (!t0) return { ok: false, message: "Transaksi tidak ditemukan atau sudah dibatalkan." };
+    if (isLocked(t0.date)) return { ok: false, message: "Transaksi ada di periode yang sudah tutup buku." };
+    if (t0.supportId) return { ok: false, message: "Transaksi talangan dikelola dari menu Talangan." };
+    const now = Date.now();
+    // Membatalkan uang masuk ikut membatalkan transfer alokasinya
+    setTransactions((prev) =>
+      prev.map((t) =>
+        (t.id === id || t.parentId === id) && !t.voided
+          ? { ...t, voided: true, voidReason: why, voidedBy: actor.name, voidedAt: now }
+          : t,
+      ),
+    );
+    logAction(
+      "Batalkan transaksi",
+      "TRANSAKSI",
+      `${t0.description} · ${formatRupiah(t0.amount)} · alasan: ${why}`,
+      id,
+    );
+    return { ok: true, message: "Transaksi dibatalkan dan tercatat di log." };
   };
 
   const updateTransaction: FinanceState["updateTransaction"] = (id, data) => {
+    const before = transactions.find((t) => t.id === id);
+    if (before && !isLocked(before.date)) {
+      const changes: string[] = [];
+      if (data.amount !== undefined && data.amount !== before.amount)
+        changes.push(`nominal ${formatRupiah(before.amount)} → ${formatRupiah(data.amount)}`);
+      if (data.date !== undefined && data.date !== before.date) changes.push("tanggal");
+      if (data.description !== undefined && data.description !== before.description) changes.push("keterangan");
+      if (data.expenseCategory !== undefined && data.expenseCategory !== before.expenseCategory)
+        changes.push(`kategori → ${data.expenseCategory}`);
+      if (data.expenseAccount !== undefined && data.expenseAccount !== before.expenseAccount)
+        changes.push(`rekening → ${data.expenseAccount}`);
+      if (data.evidenceUrl !== undefined && data.evidenceUrl !== before.evidenceUrl) changes.push("bukti");
+      if (changes.length > 0)
+        logAction("Ubah transaksi", "TRANSAKSI", `${before.description} · ${changes.join(", ")}`, id);
+    }
     setTransactions((prev) => {
       const orig = prev.find((t) => t.id === id);
-      if (!orig || isLocked(orig.date) || (data.date !== undefined && isLocked(data.date))) return prev;
+      if (!orig || orig.voided || isLocked(orig.date) || (data.date !== undefined && isLocked(data.date))) return prev;
       const amountChanged =
         data.amount !== undefined && data.amount !== orig.amount && orig.amount > 0;
       const ratio = amountChanged ? (data.amount as number) / orig.amount : 1;
@@ -683,6 +927,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   const currentPeriod = useMemo(() => periodOfTs(Date.now()), []);
 
   const closePeriod: FinanceState["closePeriod"] = (key) => {
+    if (!can("closePeriod")) return { ok: false, message: ACTION_DENIED.closePeriod };
     const [y, m] = key.split("-").map(Number);
     const p = periodInfo(y, m);
     if (p.end.getTime() >= periodOfTs(Date.now()).start.getTime()) {
@@ -697,16 +942,28 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     if (pend > 0) {
       return { ok: false, message: `Masih ada ${pend} arahan transfer di periode ${p.label} yang belum dikonfirmasi.` };
     }
+    const approvalsOpen = transactions.filter(
+      (t) => (t.approval === "PENDING" || t.approval === "REJECTED") && inPeriod(p, t.date),
+    ).length;
+    if (approvalsOpen > 0) {
+      return {
+        ok: false,
+        message: `Masih ada ${approvalsOpen} pengeluaran di periode ${p.label} yang belum disetujui owner (atau ditolak dan belum dikoreksi).`,
+      };
+    }
     setSettings((prev) => ({ ...prev, closedThrough: key }));
+    logAction("Tutup buku", "PERIODE", `Periode ${p.label}`, key);
     return { ok: true, message: `Periode ${p.label} sudah tutup buku.` };
   };
 
   const reopenPeriod = () => {
+    if (!can("reopenPeriod")) return denied("reopenPeriod");
     if (!settings.closedThrough) return;
     const [cy, cm] = settings.closedThrough.split("-").map(Number);
     const p = periodInfo(cy, cm);
     const prev = shiftPeriod(p, -1);
     setSettings((s) => ({ ...s, closedThrough: s.closedThrough === p.key ? prev.key : s.closedThrough }));
+    logAction("Buka kembali periode tutup buku", "PERIODE", `Periode ${p.label}`, p.key);
   };
 
   // ---------- Backup ----------
@@ -716,21 +973,24 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     version: 2,
     exportedAt: Date.now(),
     projects,
-    transactions,
+    transactions: rawTx,
     supports,
     settings,
+    auditLog,
   });
 
   const importData: FinanceState["importData"] = (data) => {
+    if (!can("restore")) return { ok: false, message: ACTION_DENIED.restore };
     const d = data as Partial<BackupData>;
     if (!d || !Array.isArray(d.projects) || !Array.isArray(d.transactions)) {
       return { ok: false, message: "File backup tidak valid." };
     }
     const tx = needsMigration(d.transactions) ? migrateTransactions(d.transactions) : d.transactions;
     setProjects(d.projects);
-    setTransactions(tx);
+    setRawTx(tx);
     setSupports(Array.isArray(d.supports) ? d.supports : []);
     if (d.settings) updateSettings(d.settings);
+    logAction("Pulihkan data dari backup", "DATA", `${d.projects.length} proyek, ${tx.length} transaksi`);
     return {
       ok: true,
       message: `Berhasil memulihkan ${d.projects.length} proyek dan ${tx.length} transaksi.`,
@@ -796,6 +1056,60 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     [sortedTransactions],
   );
 
+  const pendingApprovals = useMemo(
+    () => sortedTransactions.filter((t) => t.approval === "PENDING" || t.approval === "REJECTED"),
+    [sortedTransactions],
+  );
+
+  const decideExpense = (id: string, decision: "APPROVED" | "REJECTED", note?: string) => {
+    if (!can("approve")) return denied("approve");
+    const t0 = transactions.find((t) => t.id === id);
+    if (!t0 || !t0.approval) return;
+    const now = Date.now();
+    setTransactions((prev) =>
+      prev.map((t) =>
+        t.id === id ? { ...t, approval: decision, approvedBy: actor.name, approvedAt: now, approvalNote: note || undefined } : t,
+      ),
+    );
+    logAction(
+      decision === "APPROVED" ? "Setujui pengeluaran" : "Tolak pengeluaran",
+      "TRANSAKSI",
+      `${t0.description} · ${formatRupiah(t0.amount)}${note ? ` · ${note}` : ""}`,
+      id,
+    );
+  };
+  const approveExpense: FinanceState["approveExpense"] = (id, note) => decideExpense(id, "APPROVED", note);
+  const rejectExpense: FinanceState["rejectExpense"] = (id, note) => decideExpense(id, "REJECTED", note);
+
+  // Unggah data lama dari browser ini ke penyimpanan online (sekali, oleh owner, saat server masih kosong)
+  const legacyAvailable =
+    firebaseEnabled &&
+    syncReady &&
+    !!legacyRef.current &&
+    projects.length === 0 &&
+    rawTx.length === 0 &&
+    supports.length === 0 &&
+    can("restore");
+  const importLegacyLocal: FinanceState["importLegacyLocal"] = () => {
+    const legacy = legacyRef.current;
+    if (!legacy || !can("restore")) return { ok: false, message: "Tidak ada data lama yang bisa diunggah." };
+    if (projects.length > 0 || rawTx.length > 0) return { ok: false, message: "Penyimpanan online sudah berisi data." };
+    setProjects(legacy.projects);
+    setRawTx(legacy.transactions);
+    setSupports(legacy.supports);
+    setSettings(legacy.settings);
+    logAction(
+      "Unggah data lama ke penyimpanan online",
+      "DATA",
+      `${legacy.projects.length} proyek, ${legacy.transactions.length} transaksi`,
+    );
+    legacyRef.current = null;
+    return {
+      ok: true,
+      message: `Berhasil mengunggah ${legacy.projects.length} proyek dan ${legacy.transactions.length} transaksi.`,
+    };
+  };
+
   const debt = useMemo(
     () => summarizeDebt(projects, transactions, supports, settings.shares),
     [projects, transactions, supports, settings.shares],
@@ -813,9 +1127,38 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     [filteredTransactions],
   );
 
+  if (!syncReady) {
+    if (syncError) {
+      return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+          <div className="max-w-md bg-white border border-rose-200 rounded-2xl p-6 text-sm text-slate-700">
+            <p className="font-bold text-rose-700 mb-2">Data keuangan belum bisa dimuat</p>
+            <p className="break-words">{syncError}</p>
+            <p className="mt-3 text-xs text-slate-500">
+              Pastikan aturan keamanan Firestore sudah dipasang dan akun ini sudah diberi peran (lihat FIREBASE-SETUP.md).
+            </p>
+          </div>
+        </div>
+      );
+    }
+    return <LoadingScreen label="Menyinkronkan data keuangan..." />;
+  }
+
   return (
     <FinanceContext.Provider
       value={{
+        actor,
+        can,
+        syncMode: firebaseEnabled ? "firebase" : "local",
+        syncError,
+        legacyAvailable,
+        importLegacyLocal,
+        auditLog,
+        voidedTransactions,
+        voidTransaction,
+        pendingApprovals,
+        approveExpense,
+        rejectExpense,
         projects,
         activeProjects,
         transactions: sortedTransactions,
@@ -851,7 +1194,6 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         deleteSupport,
         balances,
         filteredBalances,
-        deleteTransaction,
         updateTransaction,
         adjustBalance,
         needsReconcile,

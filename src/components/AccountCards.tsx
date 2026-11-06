@@ -72,7 +72,14 @@ export function AccountCards() {
       )
     )
       return;
-    adjustBalance(key, n);
+    let reason: string | undefined;
+    if (diff !== 0) {
+      const input = window.prompt("Tulis penyebab selisih (wajib, minimal 5 karakter). Contoh: biaya admin bank, nota belum dicatat.");
+      if (input === null) return;
+      if (input.trim().length < 5) return alert("Penyebab selisih wajib diisi agar penyesuaian bisa ditelusuri.");
+      reason = input.trim();
+    }
+    adjustBalance(key, n, reason);
     setEditing(null);
   };
 

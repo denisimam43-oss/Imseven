@@ -30,7 +30,7 @@ function Box({ title, children }: { title: string; children: React.ReactNode }) 
 }
 
 export function PeriodRecap() {
-  const { projects, transactions, settings, currentPeriod, closePeriod, reopenPeriod, pendingTransfers } = useFinance();
+  const { projects, transactions, settings, currentPeriod, closePeriod, reopenPeriod, pendingTransfers, can } = useFinance();
   const [offset, setOffset] = useState(0);
   const period = useMemo(() => shiftPeriod(currentPeriod, offset), [currentPeriod, offset]);
   const r = useMemo(
@@ -233,7 +233,12 @@ export function PeriodRecap() {
               : "Tutup buku bisa dilakukan setelah periode ini selesai (lewat tanggal 25)."}
         </p>
         <div className="flex gap-2 self-start sm:self-auto">
-          {isLastClosed && (
+          {finished && !r.closed && !can("closePeriod") && (
+            <span className="text-[11px] font-semibold text-slate-500 self-center">
+              Tutup buku dilakukan oleh Owner.
+            </span>
+          )}
+          {isLastClosed && can("reopenPeriod") && (
             <button
               onClick={() => {
                 if (window.confirm(`Buka kembali periode ${period.label}? Lakukan hanya untuk koreksi, lalu tutup lagi.`)) reopenPeriod();
@@ -243,7 +248,7 @@ export function PeriodRecap() {
               <LockOpen size={14} /> Buka kembali
             </button>
           )}
-          {finished && !r.closed && (
+          {finished && !r.closed && can("closePeriod") && (
             <button
               onClick={() => {
                 if (!window.confirm(`Tutup buku periode ${period.label}? Setelah ini angka periode tersebut terkunci.`)) return;
