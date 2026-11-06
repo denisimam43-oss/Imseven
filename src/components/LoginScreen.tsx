@@ -7,7 +7,7 @@ const inputCls =
 const labelCls = "block text-xs font-bold text-slate-500 mb-1 uppercase tracking-wider";
 
 export function LoginScreen() {
-  const { mode, localHasPassword, signInEmail, signInLocal, createLocalPassword } = useAuth();
+  const { mode, localHasPassword, signInEmail, signInGoogle, signInLocal, createLocalPassword } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -121,6 +121,32 @@ export function LoginScreen() {
             {busy ? "Memproses..." : creating ? "Buat Sandi & Masuk" : "Akses Dashboard"}
           </button>
         </form>
+
+        {mode === "firebase" && (
+          <div className="mt-4">
+            <div className="flex items-center gap-3 my-3 text-[10px] font-bold text-slate-300 uppercase tracking-widest">
+              <span className="flex-1 h-px bg-slate-200" /> atau <span className="flex-1 h-px bg-slate-200" />
+            </div>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={async () => {
+                setError("");
+                setBusy(true);
+                try {
+                  await signInGoogle();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : "Gagal masuk dengan Google.");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+              className="w-full border border-slate-200 hover:bg-slate-50 disabled:opacity-60 text-slate-700 text-xs font-bold uppercase tracking-widest py-3.5 rounded-xl transition-all"
+            >
+              Masuk dengan Google
+            </button>
+          </div>
+        )}
 
         <p className="mt-6 text-center text-[10px] font-bold text-slate-400 uppercase tracking-widest">
           {mode === "firebase"

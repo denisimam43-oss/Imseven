@@ -18,6 +18,10 @@ Menu **Authentication > Users > Add user**. Buat satu akun per orang (Owner, Sal
 masing-masing dan sandi awal minimal 8 karakter. Jangan berbagi satu akun.
 Salin **User UID** tiap akun.
 
+Alternatif tanpa sandi: aktifkan penyedia **Google** di Sign-in method. Orang yang sudah punya akun Google
+bisa memakai tombol "Masuk dengan Google"; akun mereka otomatis tercatat di tab Users dan UID-nya bisa disalin dari sana.
+Akses data tetap hanya untuk akun yang punya dokumen peran (langkah 4).
+
 ## 4. Tentukan peran
 Menu **Firestore Database > Start collection**, nama koleksi `users`. Untuk tiap akun buat dokumen
 dengan **Document ID = User UID** dan isi field:

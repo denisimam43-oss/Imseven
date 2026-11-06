@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import {
   onAuthStateChanged,
+  GoogleAuthProvider,
   signInWithEmailAndPassword,
+  signInWithPopup,
   signOut as fbSignOut,
   updatePassword,
 } from "firebase/auth";
@@ -26,6 +28,7 @@ interface AuthState {
   mode: "firebase" | "local";
   localHasPassword: boolean;
   signInEmail: (email: string, password: string) => Promise<void>;
+  signInGoogle: () => Promise<void>;
   signInLocal: (password: string) => Promise<void>;
   createLocalPassword: (password: string) => Promise<void>;
   changePassword: (password: string) => Promise<void>;
@@ -93,6 +96,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await signInWithEmailAndPassword(auth, email.trim(), password);
         } catch {
           throw new Error("Email atau kata sandi salah.");
+        }
+      },
+      signInGoogle: async () => {
+        try {
+          await signInWithPopup(auth, new GoogleAuthProvider());
+        } catch (err) {
+          const code = (err as { code?: string })?.code || "";
+          if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") return;
+          if (code === "auth/popup-blocked") throw new Error("Jendela login diblokir browser. Izinkan pop-up untuk situs ini lalu coba lagi.");
+          if (code === "auth/unauthorized-domain")
+            throw new Error("Domain ini belum didaftarkan di Firebase (Authentication > Settings > Authorized domains).");
+          throw new Error("Gagal masuk dengan Google.");
         }
       },
       signInLocal: async (password) => {
