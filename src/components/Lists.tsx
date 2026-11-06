@@ -29,6 +29,7 @@ import {
   Transaction,
 } from "../types";
 import { summarizeProject } from "../finance";
+import { categoryGroups, isStandardCategory } from "../categories";
 import { planStatus } from "../plan";
 import { fmtDay } from "../calendar";
 import { downloadCsv, generateTransactionsCsv } from "../csvExport";
@@ -620,7 +621,18 @@ export function TransactionHistory() {
                           <option value="REK3">REK3</option>
                           <option value="REK4">REK4</option>
                         </select>
-                        <input type="text" value={editCategory} onChange={(e) => setEditCategory(e.target.value)} className="w-full px-2 py-1 border border-slate-200 rounded text-xs" placeholder="Kategori" />
+                        <select value={editCategory} onChange={(e) => setEditCategory(e.target.value)} className="w-full px-2 py-1 border border-slate-200 rounded text-xs">
+                          {editCategory && !isStandardCategory(editCategory) && (
+                            <option value={editCategory}>{editCategory} (kategori lama)</option>
+                          )}
+                          {categoryGroups().map((g) => (
+                            <optgroup key={g.group} label={g.group}>
+                              {g.items.map((c) => (
+                                <option key={c.value} value={c.value}>{c.label}</option>
+                              ))}
+                            </optgroup>
+                          ))}
+                        </select>
                       </div>
                     ) : (
                       <TypeBadge t={t} />

@@ -8,10 +8,10 @@ import React, {
   useMemo,
 } from "react";
 import {
-  AuditEntity,
   AuditEntry,
   Project,
   Role,
+  LossCause,
   Transaction,
   RekeningType,
   FilterPeriod,
@@ -21,6 +21,7 @@ import {
   DEFAULT_SETTINGS,
   ProjectCategory,
   PaymentScheme,
+  AuditAction,
 } from "../types";
 import { buildPlan } from "../plan";
 import { LoadingScreen } from "../components/LoginScreen";
@@ -30,6 +31,14 @@ import { useAuth } from "../auth/AuthContext";
 import { firebaseEnabled } from "../firebase";
 import { Action, ACTION_DENIED, roleCan } from "../permissions";
 import { useCollectionSync, useDocSync } from "./sync";
+import {
+  appendAudit,
+  appendSettingsAudit,
+  diffFields,
+  makeAuditEntry,
+  mergeAudit,
+  snapshotTx,
+} from "../audit";
 import {
   analyzeProject,
   buildAllocationTransfers,
@@ -46,6 +55,7 @@ import {
   needsMigration,
   outstandingSupportFor,
   summarizeProject,
+  buildOpeningTransactions,
 } from "../finance";
 
 const KEY_PROJECTS = "seven_interior_projects_v3";
@@ -108,7 +118,7 @@ export interface BackupData {
   transactions: Transaction[];
   supports: ProjectSupport[];
   settings?: FinanceSettings;
-  auditLog?: AuditEntry[]; // hanya informasi; log aktivitas tidak ditimpa saat pemulihan
+  audit?: AuditEntry[]; // log aktivitas; digabung (bukan ditimpa) saat pemulihan
 }
 
 interface FinanceState {
@@ -120,7 +130,6 @@ interface FinanceState {
   legacyAvailable: boolean; // ada data lama di browser ini yang bisa diunggah ke penyimpanan online
   importLegacyLocal: () => { ok: boolean; message: string };
   // ---- Audit, bukti, persetujuan ----
-  auditLog: AuditEntry[];
   voidedTransactions: Transaction[];
   voidTransaction: (id: string, reason: string) => { ok: boolean; message: string };
   pendingApprovals: Transaction[]; // pengeluaran menunggu / ditolak owner
@@ -176,6 +185,7 @@ interface FinanceState {
     projectId?: string,
     date?: number,
     evidenceUrl?: string,
+    extra?: { lossCause?: LossCause; overCap?: boolean },
   ) => void;
   addTransfer: (
     from: RekeningType,
@@ -215,6 +225,11 @@ interface FinanceState {
   dismissReconcile: () => void;
   exportData: () => BackupData;
   importData: (data: unknown) => { ok: boolean; message: string };
+  audit: AuditEntry[];
+  setOpeningBalances: (
+    date: number,
+    targets: Record<RekeningType, number>,
+  ) => { ok: boolean; message: string };
 }
 
 const FinanceContext = createContext<FinanceState | undefined>(undefined);
@@ -226,6 +241,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     [authUser.name, authUser.role, authUser.email],
   );
   const can = (action: Action) => roleCan(actor.role, action);
+  try {
+    sessionStorage.setItem("seven_actor", actor.name);
+    sessionStorage.setItem("seven_role", actor.role);
+  } catch {
+    /* abaikan */
+  }
 
   const [projects, setProjects] = useState<Project[]>(() => (firebaseEnabled ? [] : readJson(KEY_PROJECTS, [])));
 
@@ -281,7 +302,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   const [supports, setSupports] = useState<ProjectSupport[]>(() =>
     firebaseEnabled ? [] : readJson(KEY_SUPPORTS, []),
   );
-  const [auditLog, setAuditLog] = useState<AuditEntry[]>(() => (firebaseEnabled ? [] : readJson(KEY_AUDIT, [])));
+  const [audit, setAudit] = useState<AuditEntry[]>(() => (firebaseEnabled ? [] : readJson(KEY_AUDIT, [])));
 
   const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>("THIS_CUTOFF");
   const [settings, setSettings] = useState<FinanceSettings>(() =>
@@ -314,12 +335,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   });
   const auditSync = useCollectionSync<AuditEntry>({
     name: "auditLog",
-    items: auditLog,
-    setItems: setAuditLog,
+    items: audit,
+    setItems: setAudit,
     enabled: firebaseEnabled,
     canWrite: true,
-    sort: (a, b) => b.ts - a.ts,
-    recent: { field: "ts", max: 1000 },
+    sort: (a, b) => b.at - a.at,
+    recent: { field: "at", max: 1000 },
   });
   const settingsSync = useDocSync<FinanceSettings>({
     path: ["config", "settings"],
@@ -334,20 +355,6 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   const syncError = projSync.error || txSync.error || supSync.error || auditSync.error || settingsSync.error;
 
   // ---------- Jejak audit ----------
-  const logAction = (action: string, entity: AuditEntity, summary: string, entityId?: string) => {
-    const entry: AuditEntry = {
-      id: generateId(),
-      ts: Date.now(),
-      by: actor.name,
-      role: actor.role,
-      action,
-      entity,
-      entityId,
-      summary,
-    };
-    setAuditLog((prev) => [entry, ...prev]);
-  };
-
   const denied = (action: Action) => {
     window.alert(ACTION_DENIED[action]);
   };
@@ -372,10 +379,30 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     [rawTx],
   );
 
+  const logAudit = (
+    action: AuditAction,
+    summary: string,
+    extra?: { target?: string; before?: Record<string, unknown>; after?: Record<string, unknown> },
+  ) => {
+    const entry = makeAuditEntry(action, summary, extra);
+    setAudit((prev) => appendAudit(prev, entry));
+  };
+
   const updateSettings: FinanceState["updateSettings"] = (data) => {
     if (!can("editSettings")) return denied("editSettings");
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+    for (const k of Object.keys(data) as (keyof FinanceSettings)[]) {
+      if (JSON.stringify(settings[k]) !== JSON.stringify(data[k])) {
+        before[k] = settings[k];
+        after[k] = data[k];
+      }
+    }
+    if (Object.keys(after).length > 0) {
+      const entry = makeAuditEntry("SETTINGS", `Pengaturan diubah: ${Object.keys(after).join(", ")}`, { before, after });
+      setAudit((prev) => appendSettingsAudit(prev, entry));
+    }
     setSettings((prev) => ({ ...prev, ...data, shares: { ...prev.shares, ...(data.shares || {}) } }));
-    logAction("Ubah pengaturan keuangan", "PENGATURAN", Object.keys(data).join(", "));
   };
 
   // Periode yang sudah tutup buku tidak boleh berubah lagi
@@ -400,8 +427,13 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     if (!firebaseEnabled) localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings));
   }, [settings]);
   useEffect(() => {
-    if (!firebaseEnabled) localStorage.setItem(KEY_AUDIT, JSON.stringify(auditLog.slice(0, 1000)));
-  }, [auditLog]);
+    if (firebaseEnabled) return;
+    try {
+      localStorage.setItem(KEY_AUDIT, JSON.stringify(audit.slice(0, 1000)));
+    } catch {
+      /* penyimpanan penuh: jejak tidak boleh menghentikan pencatatan keuangan */
+    }
+  }, [audit]);
 
   const dismissReconcile = () => {
     if (!firebaseEnabled) localStorage.removeItem(KEY_RECONCILE);
@@ -456,6 +488,9 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   ) => {
     const createdAt = firstPayment?.date ?? Date.now();
     if (firstPayment && firstPayment.amount > 0 && isLocked(firstPayment.date)) return;
+    logAudit("PROJECT_ADD", `Proyek baru: ${name} (${formatRupiah(totalValue)})`, {
+      after: { name, totalValue, dp: firstPayment?.amount ?? 0 },
+    });
     const newProject: Project = {
       id: generateId(),
       name,
@@ -484,12 +519,6 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         debtInput.spentMaterial + debtInput.spentLabour + debtInput.remainingFund;
     }
     setProjects((prev) => [newProject, ...prev]);
-    logAction(
-      "Buat proyek",
-      "PROYEK",
-      `${name} · kontrak ${formatRupiah(totalValue)}${debtInput ? " · utang project" : ""}`,
-      newProject.id,
-    );
 
     const opening: Transaction[] = [];
     if (debtInput) {
@@ -577,8 +606,9 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
 
   const confirmTransfers: FinanceState["confirmTransfers"] = (ids, date = Date.now()) => {
     const set = new Set(ids);
-    const total = rawTx.filter((t) => set.has(t.id) && t.pending).reduce((sum, t) => sum + t.amount, 0);
-    if (total > 0) logAction("Konfirmasi arahan transfer", "TRANSAKSI", `${ids.length} arahan · total ${formatRupiah(total)}`);
+    logAudit("TRANSFER_CONFIRM", `${ids.length} arahan transfer dikonfirmasi`, {
+      after: { ids: ids.length, date },
+    });
     // Tanggal = hari admin benar-benar transfer di bank (tidak boleh masuk periode yang sudah ditutup)
     setTransactions((prev) =>
       prev.map((t) =>
@@ -618,6 +648,10 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   const receivePayment: FinanceState["receivePayment"] = (input) => {
     const project = projects.find((p) => p.id === input.projectId);
     if (!project || isLocked(input.date)) return;
+    logAudit("PAYMENT", `${project.name}: ${input.incomeType} ${formatRupiah(input.amount)}`, {
+      target: project.id,
+      after: { amount: input.amount, incomeType: input.incomeType, date: input.date, allocate: input.allocate },
+    });
     let extra: Transaction[] = [];
     if (input.settleSupports) {
       const outstanding = outstandingSupportFor(supports, project.id);
@@ -630,37 +664,45 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       }
     }
     setTransactions((prev) => [...buildPayment(project, input, prev), ...extra, ...prev]);
-    logAction(
-      "Catat pembayaran klien",
-      "TRANSAKSI",
-      `${project.name} · ${input.incomeType} ${formatRupiah(input.amount)}`,
-      project.id,
-    );
   };
 
   const completeProject: FinanceState["completeProject"] = (projectId, date) => {
     if (isLocked(date)) return;
+    const proj = projects.find((p) => p.id === projectId);
+    logAudit("PROJECT_STATUS", `Serah terima proyek: ${proj?.name ?? projectId}`, {
+      target: projectId,
+      before: { status: proj?.status },
+      after: { status: "COMPLETED", completedAt: date },
+    });
     setProjects((prev) =>
       prev.map((p) => (p.id === projectId ? { ...p, status: "COMPLETED", completedAt: date } : p)),
     );
-    logAction("Serah terima proyek", "PROYEK", projects.find((p) => p.id === projectId)?.name || projectId, projectId);
   };
 
   const reopenProject: FinanceState["reopenProject"] = (projectId) => {
     const p0 = projects.find((p) => p.id === projectId);
     if (p0?.completedAt && isLocked(p0.completedAt)) return;
+    logAudit("PROJECT_STATUS", `Serah terima dibatalkan: ${p0?.name ?? projectId}`, {
+      target: projectId,
+      before: { status: p0?.status, completedAt: p0?.completedAt },
+      after: { status: "ONGOING" },
+    });
     setProjects((prev) =>
       prev.map((p) =>
         p.id === projectId ? { ...p, status: "ONGOING", completedAt: undefined } : p,
       ),
     );
-    logAction("Batalkan serah terima", "PROYEK", p0?.name || projectId, projectId);
   };
 
   const archiveProject: FinanceState["archiveProject"] = (projectId, archived) => {
     if (!can("archiveProject")) return denied("archiveProject");
+    const pa = projects.find((p) => p.id === projectId);
+    logAudit("PROJECT_STATUS", `${archived ? "Arsip" : "Buka arsip"} proyek: ${pa?.name ?? projectId}`, {
+      target: projectId,
+      before: { archived: !!pa?.archived },
+      after: { archived },
+    });
     setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, archived } : p)));
-    logAction(archived ? "Arsipkan proyek" : "Pulihkan proyek dari arsip", "PROYEK", projects.find((p) => p.id === projectId)?.name || projectId, projectId);
   };
 
   const deleteProject: FinanceState["deleteProject"] = (id) => {
@@ -672,7 +714,11 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       denied("deleteProject");
       return false;
     }
-    logAction("Hapus proyek (belum ada transaksi)", "PROYEK", projects.find((p) => p.id === id)?.name || id, id);
+    const pd = projects.find((p) => p.id === id);
+    logAudit("PROJECT_DELETE", `Hapus proyek: ${pd?.name ?? id}`, {
+      target: id,
+      before: { name: pd?.name, totalValue: pd?.totalValue },
+    });
     setProjects((prev) => prev.filter((p) => p.id !== id));
     return true;
   };
@@ -687,8 +733,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     projectId,
     date = Date.now(),
     evidenceUrl,
+    extra,
   ) => {
     if (isLocked(date)) return;
+    logAudit("TX_ADD", `Biaya ${formatRupiah(amount)}: ${description}`, {
+      after: snapshotTx({ type: "EXPENSE", amount, description, expenseCategory: category, expenseAccount: account, projectId, date, evidenceUrl, ...extra }),
+    });
     // Pengeluaran besar dan prive/dividen perlu persetujuan owner (owner sendiri otomatis disetujui)
     const isWithdrawal = category.includes("Prive") || category.startsWith("Profit");
     const needsApproval = amount > settings.approvalLimit || isWithdrawal;
@@ -709,14 +759,11 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         approval: needsApproval ? (byOwner ? "APPROVED" : "PENDING") : undefined,
         approvedBy: needsApproval && byOwner ? actor.name : undefined,
         approvedAt: needsApproval && byOwner ? now : undefined,
+        ...(extra?.lossCause ? { lossCause: extra.lossCause } : {}),
+        ...(extra?.overCap ? { overCap: true } : {}),
       },
       ...prev,
     ]);
-    logAction(
-      needsApproval && !byOwner ? "Catat pengeluaran (menunggu persetujuan owner)" : "Catat pengeluaran",
-      "TRANSAKSI",
-      `${description} · ${category} · ${formatRupiah(amount)}`,
-    );
   };
 
   const addTransfer: FinanceState["addTransfer"] = (
@@ -728,6 +775,9 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     projectId,
   ) => {
     if (from === to || isLocked(date)) return;
+    logAudit("TX_ADD", `Transfer ${from} → ${to} ${formatRupiah(amount)}`, {
+      after: snapshotTx({ type: "TRANSFER", amount, description, fromAccount: from, toAccount: to, projectId, date }),
+    });
     setTransactions((prev) => [
       {
         id: generateId(),
@@ -742,7 +792,6 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       },
       ...prev,
     ]);
-    logAction("Transfer antar rekening", "TRANSAKSI", `${from} → ${to} · ${formatRupiah(amount)}${description ? ` · ${description}` : ""}`);
   };
 
   // ---------- Talangan ----------
@@ -759,6 +808,9 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     toAccount,
   ) => {
     if (isLocked(date)) return;
+    logAudit("SUPPORT", `Talangan ${formatRupiah(amount)}: ${fromProjectName} → ${toProjectName}`, {
+      after: { amount, from: fromProjectName, to: toProjectName, date },
+    });
     const supportId = generateId();
     const destAccount = toAccount || account;
     const newSupport: ProjectSupport = {
@@ -801,17 +853,20 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     };
     setSupports((prev) => [newSupport, ...prev]);
     setTransactions((prev) => [borrowerIncome, lenderExpense, ...prev]);
-    logAction("Catat talangan", "TALANGAN", `${fromProjectName} → ${toProjectName} · ${formatRupiah(amount)}`, supportId);
   };
 
   const settleSupport: FinanceState["settleSupport"] = (supportId, date = Date.now()) => {
     const sup = supports.find((s) => s.id === supportId);
     if (!sup || sup.status === "RETURNED" || isLocked(date)) return;
+    logAudit("SUPPORT", `Talangan dikembalikan ${formatRupiah(sup.amount)}: ${sup.toProjectName} → ${sup.fromProjectName}`, {
+      target: supportId,
+      before: { status: sup.status },
+      after: { status: "RETURNED", date },
+    });
     setSupports((prev) =>
       prev.map((s) => (s.id === supportId ? { ...s, status: "RETURNED", returnedAt: date } : s)),
     );
     setTransactions((prev) => [...settleSupportTx(sup, date), ...prev]);
-    logAction("Talangan dikembalikan", "TALANGAN", `${sup.fromProjectName} ← ${sup.toProjectName} · ${formatRupiah(sup.amount)}`, supportId);
   };
 
   const deleteSupport: FinanceState["deleteSupport"] = (supportId) => {
@@ -819,6 +874,10 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     if (transactions.some((t) => t.supportId === supportId && isLocked(t.date))) return;
     const sup = supports.find((s) => s.id === supportId);
     const now = Date.now();
+    logAudit("SUPPORT", `Talangan dihapus: ${sup ? `${sup.fromProjectName} → ${sup.toProjectName}` : supportId}`, {
+      target: supportId,
+      before: sup ? { amount: sup.amount, status: sup.status } : undefined,
+    });
     setSupports((prev) => prev.filter((s) => s.id !== supportId));
     // Transaksi talangan dibatalkan (void), tidak dihapus, agar jejaknya tetap ada
     setTransactions((prev) =>
@@ -828,7 +887,6 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
           : t,
       ),
     );
-    logAction("Hapus talangan", "TALANGAN", sup ? `${sup.fromProjectName} → ${sup.toProjectName} · ${formatRupiah(sup.amount)}` : supportId, supportId);
   };
 
   // ---------- Rekonsiliasi saldo ----------
@@ -837,6 +895,10 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     const current = computeBalances(transactions)[account];
     const diff = Math.round(newBalance - current);
     if (diff === 0) return;
+    logAudit("BALANCE_ADJUST", `Penyesuaian saldo ${account}: ${formatRupiah(current)} → ${formatRupiah(newBalance)}${reason ? ` · ${reason}` : ""}`, {
+      before: { account, saldo: current },
+      after: { account, saldo: newBalance, selisih: diff, ...(reason ? { alasan: reason } : {}) },
+    });
     const base = {
       id: generateId(),
       date: Date.now(),
@@ -850,11 +912,6 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         ? { ...base, type: "INCOME", account }
         : { ...base, type: "EXPENSE", expenseAccount: account, expenseCategory: "Penyesuaian Manual" };
     setTransactions((prev) => [tx, ...prev]);
-    logAction(
-      "Penyesuaian saldo",
-      "TRANSAKSI",
-      `${account}: ${formatRupiah(current)} → ${formatRupiah(newBalance)} (selisih ${formatRupiah(diff)})${reason ? ` · ${reason}` : ""}`,
-    );
   };
 
   // ---------- Edit / batalkan transaksi ----------
@@ -876,30 +933,21 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
           : t,
       ),
     );
-    logAction(
-      "Batalkan transaksi",
-      "TRANSAKSI",
-      `${t0.description} · ${formatRupiah(t0.amount)} · alasan: ${why}`,
-      id,
-    );
+    logAudit("TX_VOID", `Batalkan ${formatRupiah(t0.amount)}: ${t0.description} · alasan: ${why}`, {
+      target: id,
+      before: snapshotTx(t0),
+      after: { voided: true, voidReason: why },
+    });
     return { ok: true, message: "Transaksi dibatalkan dan tercatat di log." };
   };
 
   const updateTransaction: FinanceState["updateTransaction"] = (id, data) => {
-    const before = transactions.find((t) => t.id === id);
-    if (before && !isLocked(before.date)) {
-      const changes: string[] = [];
-      if (data.amount !== undefined && data.amount !== before.amount)
-        changes.push(`nominal ${formatRupiah(before.amount)} → ${formatRupiah(data.amount)}`);
-      if (data.date !== undefined && data.date !== before.date) changes.push("tanggal");
-      if (data.description !== undefined && data.description !== before.description) changes.push("keterangan");
-      if (data.expenseCategory !== undefined && data.expenseCategory !== before.expenseCategory)
-        changes.push(`kategori → ${data.expenseCategory}`);
-      if (data.expenseAccount !== undefined && data.expenseAccount !== before.expenseAccount)
-        changes.push(`rekening → ${data.expenseAccount}`);
-      if (data.evidenceUrl !== undefined && data.evidenceUrl !== before.evidenceUrl) changes.push("bukti");
-      if (changes.length > 0)
-        logAction("Ubah transaksi", "TRANSAKSI", `${before.description} · ${changes.join(", ")}`, id);
+    const orig0 = transactions.find((t) => t.id === id);
+    if (orig0 && !isLocked(orig0.date) && !(data.date !== undefined && isLocked(data.date))) {
+      const d = diffFields(snapshotTx(orig0), snapshotTx({ ...orig0, ...data }));
+      if (Object.keys(d.after).length > 0) {
+        logAudit("TX_EDIT", `Ubah transaksi: ${orig0.description}`, { target: id, before: d.before, after: d.after });
+      }
     }
     setTransactions((prev) => {
       const orig = prev.find((t) => t.id === id);
@@ -920,6 +968,39 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         return t;
       });
     });
+  };
+
+  // ---------- Saldo pembukaan ----------
+
+  const setOpeningBalances: FinanceState["setOpeningBalances"] = (date, targets) => {
+    if (!can("editSettings")) return { ok: false, message: "Saldo pembukaan hanya dapat diisi oleh Owner." };
+    if (isLocked(date)) {
+      return { ok: false, message: "Tanggal pembukaan masuk periode yang sudah tutup buku." };
+    }
+    const opening = buildOpeningTransactions(transactions, targets, date);
+    const before = computeBalances(transactions.filter((t) => !t.isOpening));
+    // Saldo pembukaan lama dibatalkan (bukan dihapus) agar tetap tercatat dan bisa ditelusuri
+    const nowTs = Date.now();
+    setTransactions((prev) => [
+      ...opening,
+      ...prev.map((t) =>
+        t.isOpening && !t.voided
+          ? { ...t, voided: true, voidReason: "Diganti saldo pembukaan baru", voidedBy: actor.name, voidedAt: nowTs }
+          : t,
+      ),
+    ]);
+    setSettings((prev) => ({ ...prev, openingDate: date }));
+    logAudit("OPENING_BALANCE", `Saldo pembukaan diisi (${opening.length} rekening disesuaikan)`, {
+      before: { saldoAplikasi: before },
+      after: { saldoBank: targets, tanggal: date },
+    });
+    return {
+      ok: true,
+      message:
+        opening.length === 0
+          ? "Saldo aplikasi sudah sama dengan saldo bank. Tidak ada penyesuaian."
+          : `Saldo pembukaan tersimpan; ${opening.length} rekening disesuaikan.`,
+    };
   };
 
   // ---------- Tutup buku ----------
@@ -951,8 +1032,11 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         message: `Masih ada ${approvalsOpen} pengeluaran di periode ${p.label} yang belum disetujui owner (atau ditolak dan belum dikoreksi).`,
       };
     }
+    logAudit("PERIOD_CLOSE", `Tutup buku periode ${p.label}`, {
+      before: { closedThrough: settings.closedThrough },
+      after: { closedThrough: key },
+    });
     setSettings((prev) => ({ ...prev, closedThrough: key }));
-    logAction("Tutup buku", "PERIODE", `Periode ${p.label}`, key);
     return { ok: true, message: `Periode ${p.label} sudah tutup buku.` };
   };
 
@@ -962,8 +1046,11 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     const [cy, cm] = settings.closedThrough.split("-").map(Number);
     const p = periodInfo(cy, cm);
     const prev = shiftPeriod(p, -1);
+    logAudit("PERIOD_REOPEN", `Periode ${p.label} dibuka kembali`, {
+      before: { closedThrough: settings.closedThrough },
+      after: { closedThrough: prev.key },
+    });
     setSettings((s) => ({ ...s, closedThrough: s.closedThrough === p.key ? prev.key : s.closedThrough }));
-    logAction("Buka kembali periode tutup buku", "PERIODE", `Periode ${p.label}`, p.key);
   };
 
   // ---------- Backup ----------
@@ -976,7 +1063,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     transactions: rawTx,
     supports,
     settings,
-    auditLog,
+    audit,
   });
 
   const importData: FinanceState["importData"] = (data) => {
@@ -989,8 +1076,11 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setProjects(d.projects);
     setRawTx(tx);
     setSupports(Array.isArray(d.supports) ? d.supports : []);
+    logAudit("IMPORT", `Backup dipulihkan: ${d.projects.length} proyek, ${tx.length} transaksi`, {
+      after: { proyek: d.projects.length, transaksi: tx.length },
+    });
+    if (Array.isArray(d.audit)) setAudit((prev) => mergeAudit(prev, d.audit as AuditEntry[]));
     if (d.settings) updateSettings(d.settings);
-    logAction("Pulihkan data dari backup", "DATA", `${d.projects.length} proyek, ${tx.length} transaksi`);
     return {
       ok: true,
       message: `Berhasil memulihkan ${d.projects.length} proyek dan ${tx.length} transaksi.`,
@@ -1071,12 +1161,10 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         t.id === id ? { ...t, approval: decision, approvedBy: actor.name, approvedAt: now, approvalNote: note || undefined } : t,
       ),
     );
-    logAction(
-      decision === "APPROVED" ? "Setujui pengeluaran" : "Tolak pengeluaran",
-      "TRANSAKSI",
-      `${t0.description} · ${formatRupiah(t0.amount)}${note ? ` · ${note}` : ""}`,
-      id,
-    );
+    logAudit(decision === "APPROVED" ? "TX_APPROVE" : "TX_REJECT", `${t0.description} · ${formatRupiah(t0.amount)}${note ? ` · ${note}` : ""}`, {
+      target: id,
+      after: { approval: decision },
+    });
   };
   const approveExpense: FinanceState["approveExpense"] = (id, note) => decideExpense(id, "APPROVED", note);
   const rejectExpense: FinanceState["rejectExpense"] = (id, note) => decideExpense(id, "REJECTED", note);
@@ -1098,11 +1186,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setRawTx(legacy.transactions);
     setSupports(legacy.supports);
     setSettings(legacy.settings);
-    logAction(
-      "Unggah data lama ke penyimpanan online",
-      "DATA",
-      `${legacy.projects.length} proyek, ${legacy.transactions.length} transaksi`,
-    );
+    logAudit("LEGACY_UPLOAD", `Data lama diunggah: ${legacy.projects.length} proyek, ${legacy.transactions.length} transaksi`);
     legacyRef.current = null;
     return {
       ok: true,
@@ -1153,7 +1237,6 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         syncError,
         legacyAvailable,
         importLegacyLocal,
-        auditLog,
         voidedTransactions,
         voidTransaction,
         pendingApprovals,
@@ -1200,6 +1283,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         dismissReconcile,
         exportData,
         importData,
+        audit,
+        setOpeningBalances,
       }}
     >
       {children}

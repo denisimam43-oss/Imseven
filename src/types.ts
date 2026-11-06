@@ -149,6 +149,9 @@ export interface Transaction {
 
   supportId?: string; // terkait talangan / subsidi silang
   isAdjustment?: boolean; // penyesuaian saldo (rekonsiliasi), bukan omset/biaya
+  isOpening?: boolean; // saldo pembukaan sistem (juga isAdjustment, tidak masuk omset/biaya)
+  lossCause?: LossCause; // sebab biaya kontingensi (kerugian yang tidak direncanakan)
+  overCap?: boolean; // biaya kontingensi yang disetujui melewati plafon proyek
   pending?: boolean; // TRANSFER arahan yang belum dikerjakan admin di bank (belum mengubah saldo)
 }
 
@@ -195,6 +198,8 @@ export interface FinanceSettings {
   closedThrough?: string; // periode terakhir yang sudah tutup buku, mis. "2026-11"
   approvalLimit: number; // pengeluaran di atas nominal ini wajib persetujuan owner
   requireEvidence: boolean; // wajib mengisi link bukti untuk pengeluaran & pembayaran klien
+  openingDate?: number; // tanggal saldo pembukaan sistem (saldo bank pada hari itu)
+  contingencyCapPct: number; // plafon kerugian per proyek (% nilai kontrak); di atasnya perlu persetujuan
 }
 
 export const DEFAULT_SETTINGS: FinanceSettings = {
@@ -208,25 +213,61 @@ export const DEFAULT_SETTINGS: FinanceSettings = {
   baseWorkdays: 26,
   approvalLimit: 5000000,
   requireEvidence: true,
+  contingencyCapPct: 7,
 };
 
 // ---------- Log aktivitas (audit trail) ----------
-
-export type AuditEntity = "TRANSAKSI" | "PROYEK" | "TALANGAN" | "PERIODE" | "DATA" | "PENGATURAN" | "AKUN";
-
-export interface AuditEntry {
-  id: string;
-  ts: number;
-  by: string; // nama pengguna
-  role: Role;
-  action: string; // mis. "Catat pengeluaran", "Batalkan transaksi"
-  entity: AuditEntity;
-  entityId?: string;
-  summary: string;
-}
 
 /** Durasi standar (hari kerja) setelah DP / kick off. */
 export const DURATIONS: Record<ProjectCategory, { produksi: number; instalasi: number }> = {
   REGULER: { produksi: 7, instalasi: 1 },
   PREMIUM: { produksi: 10, instalasi: 3 },
+};
+
+// ---------- Jejak perubahan ----------
+
+export type AuditAction =
+  | "TX_ADD"
+  | "TX_EDIT"
+  | "TX_DELETE"
+  | "PAYMENT"
+  | "TRANSFER_CONFIRM"
+  | "PROJECT_ADD"
+  | "PROJECT_STATUS"
+  | "PROJECT_DELETE"
+  | "SUPPORT"
+  | "BALANCE_ADJUST"
+  | "OPENING_BALANCE"
+  | "PERIOD_CLOSE"
+  | "PERIOD_REOPEN"
+  | "SETTINGS"
+  | "IMPORT"
+  | "TX_VOID"
+  | "TX_APPROVE"
+  | "TX_REJECT"
+  | "LEGACY_UPLOAD";
+
+/** Satu baris jejak perubahan: siapa, kapan, apa, nilai sebelum dan sesudah. */
+export interface AuditEntry {
+  id: string;
+  at: number; // waktu kejadian
+  actor: string; // pengguna yang melakukan
+  role?: Role; // peran pengguna saat melakukan
+  action: AuditAction;
+  summary: string; // kalimat singkat yang bisa dibaca
+  target?: string; // id transaksi / proyek terkait
+  before?: Record<string, unknown>;
+  after?: Record<string, unknown>;
+}
+
+// ---------- Kontingensi (dana tak terduga) per proyek ----------
+
+/** Sebab biaya tak terduga. Dipisah supaya terlihat dari mana kerugian paling sering datang. */
+export type LossCause = "INTERNAL" | "VENDOR" | "BISNIS" | "EKSTERNAL";
+
+export const LOSS_CAUSE_LABEL: Record<LossCause, string> = {
+  INTERNAL: "Kesalahan internal (karyawan)",
+  VENDOR: "Kesalahan tukang / vendor",
+  BISNIS: "Keputusan bisnis (mengalah demi klien)",
+  EKSTERNAL: "Kejadian eksternal (harga bahan, dll.)",
 };

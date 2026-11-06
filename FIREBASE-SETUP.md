@@ -49,7 +49,7 @@ Setelah itu cocokkan saldo tiap rekening dengan saldo bank sebelum dipakai haria
 | Pulihkan backup | Ya | Tidak | Tidak |
 
 ## Catatan
-- Aturan Firestore di atas menegakkan: log audit hanya bisa ditambah, transaksi tidak bisa dihapus,
+- Aturan Firestore di atas menegakkan: log audit hanya bisa ditambah, transaksi dan talangan hanya bisa dihapus Owner (saat pulihkan backup; sehari-hari dibatalkan, bukan dihapus),
   dan persetujuan hanya bisa diputuskan Owner. Pembatasan lain (tutup buku, pengaturan) ditegakkan di aplikasi;
   untuk pengamanan tingkat server perlu Cloud Functions.
 - Kewajiban link bukti hanya divalidasi di tampilan aplikasi.

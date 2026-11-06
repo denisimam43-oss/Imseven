@@ -46,13 +46,14 @@ service cloud.firestore {
         && (isOwner()
             || request.resource.data.get('approval', null) == resource.data.get('approval', null)
             || request.resource.data.get('approval', null) == 'PENDING');
-      allow delete: if false;
+      // Hanya Owner (saat memulihkan backup) yang boleh menghapus dokumen transaksi.
+      allow delete: if isOwner();
     }
 
     match /supports/{id} {
       allow read: if hasRole();
       allow create, update: if hasRole();
-      allow delete: if false;
+      allow delete: if isOwner();
     }
 
     // Log audit hanya bisa ditambah. Tidak bisa diubah atau dihapus oleh siapa pun.

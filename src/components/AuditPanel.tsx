@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
-import { ShieldCheck, AlertTriangle, FileWarning, Ban, History, Settings2 } from "lucide-react";
+import { ShieldCheck, AlertTriangle, FileWarning, Ban, Settings2 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
+import { AuditLogPanel } from "./AuditLogPanel";
 import { formatDate, formatRupiah, cn } from "../utils";
 import { ROLE_LABEL } from "../types";
 import { isRealExpense, isRealIncome } from "../finance";
@@ -18,13 +19,11 @@ export function AuditPanel() {
     rejectExpense,
     transactions,
     voidedTransactions,
-    auditLog,
     projects,
     settings,
     updateSettings,
     currentPeriod,
   } = useFinance();
-  const [logLimit, setLogLimit] = useState(50);
   const [limitInput, setLimitInput] = useState(String(settings.approvalLimit));
 
   const projectName = (id?: string) => projects.find((p) => p.id === id)?.name;
@@ -191,43 +190,8 @@ export function AuditPanel() {
         )}
       </div>
 
-      {/* Log aktivitas */}
-      <div className={card}>
-        <div className={head}>
-          <span className="p-2.5 bg-navy-50 text-navy-600 rounded-xl">
-            <History size={20} />
-          </span>
-          <div>
-            <h4 className="font-bold text-slate-800">Log Aktivitas</h4>
-            <p className="text-xs text-slate-500 font-medium">Siapa melakukan apa dan kapan. Log tidak bisa diubah atau dihapus.</p>
-          </div>
-        </div>
-        {auditLog.length === 0 ? (
-          <p className="px-6 py-6 text-xs font-medium text-slate-400">Belum ada aktivitas tercatat.</p>
-        ) : (
-          <ul className="divide-y divide-slate-100 text-xs">
-            {auditLog.slice(0, logLimit).map((a) => (
-              <li key={a.id} className="px-6 py-3">
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                  <span className="font-bold text-slate-800">{a.action}</span>
-                  <span className="text-slate-400">·</span>
-                  <span className="text-slate-600">{a.by}</span>
-                  <span className="text-[10px] text-slate-400">({ROLE_LABEL[a.role] || a.role})</span>
-                  <span className="ml-auto text-[10px] font-mono text-slate-400">{formatDate(a.ts, "dd MMM yyyy HH:mm")}</span>
-                </div>
-                <p className="text-slate-500 mt-0.5 break-words">{a.summary}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-        {auditLog.length > logLimit && (
-          <div className="p-4 text-center">
-            <button onClick={() => setLogLimit((l) => l + 50)} className="text-xs font-bold text-navy-600 hover:underline">
-              Tampilkan lebih banyak ({auditLog.length - logLimit} lagi)
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Jejak perubahan lengkap (siapa, kapan, nilai sebelum dan sesudah) */}
+      <AuditLogPanel />
 
       {/* Pengaturan kontrol (Owner) */}
       <div className={card}>

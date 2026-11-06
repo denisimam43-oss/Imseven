@@ -124,6 +124,7 @@ export function PeriodRecap() {
           <Row label="Beban usaha" value={r.opex} neg hint="Pengeluaran non-proyek, tanpa prive/dividen" />
           <Row label="Laba bersih" value={r.netProfit} bold />
           <Row label="Prive & dividen" value={r.ownerDraw} neg />
+          <Row label="Cadangan pajak" value={r.taxReserve} neg hint="Disisihkan, bukan beban usaha" />
           <Row label="Laba ditahan" value={r.retained} bold />
           {r.estProfit !== 0 && (
             <p className="text-[11px] text-indigo-700 mt-2">

@@ -6,6 +6,7 @@ import { format, subDays, isSameDay, getDaysInMonth, startOfMonth, startOfYear, 
 import { id } from 'date-fns/locale';
 import { formatRupiah } from '../utils';
 import { periodOfTs, shiftPeriod, mkDate, BULAN } from '../calendar';
+import { isReserveCategory } from "../categories";
 
 export function CashFlowChart() {
   const { transactions, filterPeriod } = useFinance();
@@ -44,9 +45,9 @@ export function CashFlowChart() {
       return days.map(day => {
         const dayTransactions = transactions.filter(t => isSameDay(new Date(t.date), day));
         const rawIn = dayTransactions.filter(t => isRealIncome(t)).reduce((sum, t) => sum + t.amount, 0);
-        const markup = dayTransactions.filter(t => isRealExpense(t) && (t.expenseCategory?.includes('Tax Reserve') || t.expenseCategory?.includes('Markup'))).reduce((sum, t) => sum + t.amount, 0);
+        const markup = dayTransactions.filter(t => isRealExpense(t) && isReserveCategory(t.expenseCategory)).reduce((sum, t) => sum + t.amount, 0);
         const realIn = rawIn - markup;
-        const realOut = dayTransactions.filter(t => isRealExpense(t) && !(t.expenseCategory?.includes('Tax Reserve') || t.expenseCategory?.includes('Markup'))).reduce((sum, t) => sum + t.amount, 0);
+        const realOut = dayTransactions.filter(t => isRealExpense(t) && !isReserveCategory(t.expenseCategory)).reduce((sum, t) => sum + t.amount, 0);
         return {
           name: format(day, 'EEE', { locale: id }), 
           fullDate: format(day, 'dd MMM yyyy', { locale: id }),
@@ -76,9 +77,9 @@ export function CashFlowChart() {
         });
         
         const rawIn = weekTransactions.filter(t => isRealIncome(t)).reduce((sum, t) => sum + t.amount, 0);
-        const markup = weekTransactions.filter(t => isRealExpense(t) && (t.expenseCategory?.includes('Tax Reserve') || t.expenseCategory?.includes('Markup'))).reduce((sum, t) => sum + t.amount, 0);
+        const markup = weekTransactions.filter(t => isRealExpense(t) && isReserveCategory(t.expenseCategory)).reduce((sum, t) => sum + t.amount, 0);
         const realIn = rawIn - markup;
-        const realOut = weekTransactions.filter(t => isRealExpense(t) && !(t.expenseCategory?.includes('Tax Reserve') || t.expenseCategory?.includes('Markup'))).reduce((sum, t) => sum + t.amount, 0);
+        const realOut = weekTransactions.filter(t => isRealExpense(t) && !isReserveCategory(t.expenseCategory)).reduce((sum, t) => sum + t.amount, 0);
         
         return {
           name: `Minggu ${week}`,
@@ -93,9 +94,9 @@ export function CashFlowChart() {
       return months.map(month => {
         const monthTransactions = transactions.filter(t => isSameMonth(new Date(t.date), month));
         const rawIn = monthTransactions.filter(t => isRealIncome(t)).reduce((sum, t) => sum + t.amount, 0);
-        const markup = monthTransactions.filter(t => isRealExpense(t) && (t.expenseCategory?.includes('Tax Reserve') || t.expenseCategory?.includes('Markup'))).reduce((sum, t) => sum + t.amount, 0);
+        const markup = monthTransactions.filter(t => isRealExpense(t) && isReserveCategory(t.expenseCategory)).reduce((sum, t) => sum + t.amount, 0);
         const realIn = rawIn - markup;
-        const realOut = monthTransactions.filter(t => isRealExpense(t) && !(t.expenseCategory?.includes('Tax Reserve') || t.expenseCategory?.includes('Markup'))).reduce((sum, t) => sum + t.amount, 0);
+        const realOut = monthTransactions.filter(t => isRealExpense(t) && !isReserveCategory(t.expenseCategory)).reduce((sum, t) => sum + t.amount, 0);
         return {
           name: format(month, 'MMM', { locale: id }), 
           fullDate: format(month, 'MMMM yyyy', { locale: id }),
@@ -110,9 +111,9 @@ export function CashFlowChart() {
       return months.map(month => {
         const monthTransactions = transactions.filter(t => isSameMonth(new Date(t.date), month));
         const rawIn = monthTransactions.filter(t => isRealIncome(t)).reduce((sum, t) => sum + t.amount, 0);
-        const markup = monthTransactions.filter(t => isRealExpense(t) && (t.expenseCategory?.includes('Tax Reserve') || t.expenseCategory?.includes('Markup'))).reduce((sum, t) => sum + t.amount, 0);
+        const markup = monthTransactions.filter(t => isRealExpense(t) && isReserveCategory(t.expenseCategory)).reduce((sum, t) => sum + t.amount, 0);
         const realIn = rawIn - markup;
-        const realOut = monthTransactions.filter(t => isRealExpense(t) && !(t.expenseCategory?.includes('Tax Reserve') || t.expenseCategory?.includes('Markup'))).reduce((sum, t) => sum + t.amount, 0);
+        const realOut = monthTransactions.filter(t => isRealExpense(t) && !isReserveCategory(t.expenseCategory)).reduce((sum, t) => sum + t.amount, 0);
         return {
           name: format(month, 'MMM', { locale: id }), 
           fullDate: format(month, 'MMMM yyyy', { locale: id }),

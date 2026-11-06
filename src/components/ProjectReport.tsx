@@ -61,6 +61,7 @@ export function ProjectReport() {
             <Row label="Biaya operasional & umum" value={pl.opex} neg hint="Pengeluaran yang tidak ditautkan ke proyek" />
             <Row label="Laba bersih" value={pl.netProfit} bold />
             <Row label="Prive & dividen pemilik" value={pl.ownerDraw} neg hint="Pengambilan pemilik, bukan beban usaha" />
+            <Row label="Cadangan pajak" value={pl.taxReserve} neg hint="Disisihkan, bukan beban usaha" />
             <Row label="Laba ditahan" value={pl.retained} bold />
           </div>
 

@@ -1,6 +1,14 @@
 import React from "react";
 import { useFinance } from "../store/FinanceContext";
 import { isRealIncome, isRealExpense } from "../finance";
+import {
+  isContingencyCategory,
+  isFixedOpexCategory,
+  isHppCategory,
+  isOfficeOpexCategory,
+  isPriveCategory,
+  isReserveCategory,
+} from "../categories";
 import { formatRupiah, cn } from "../utils";
 import { ShieldCheck, AlertTriangle } from "lucide-react";
 
@@ -16,8 +24,7 @@ export function BudgetControl() {
     .filter(
       (t) =>
         isRealExpense(t) &&
-        (t.expenseCategory?.includes("Tax Reserve") ||
-          t.expenseCategory?.includes("Markup"))
+        isReserveCategory(t.expenseCategory)
     )
     .reduce((sum, t) => sum + t.amount, 0);
 
@@ -28,7 +35,7 @@ export function BudgetControl() {
     .filter(
       (t) =>
         isRealExpense(t) &&
-        t.expenseCategory?.startsWith("HPP")
+        isHppCategory(t.expenseCategory)
     )
     .reduce((sum, t) => sum + t.amount, 0);
 
@@ -36,7 +43,7 @@ export function BudgetControl() {
     .filter(
       (t) =>
         isRealExpense(t) &&
-        t.expenseCategory?.includes("Kontingensi")
+        isContingencyCategory(t.expenseCategory)
     )
     .reduce((sum, t) => sum + t.amount, 0);
 
@@ -44,7 +51,7 @@ export function BudgetControl() {
     .filter(
       (t) =>
         isRealExpense(t) &&
-        t.expenseCategory?.includes("Prive")
+        isPriveCategory(t.expenseCategory)
     )
     .reduce((sum, t) => sum + t.amount, 0);
 
@@ -52,9 +59,7 @@ export function BudgetControl() {
     .filter(
       (t) =>
         isRealExpense(t) &&
-        t.expenseCategory?.startsWith("Opex -") &&
-        !t.expenseCategory?.includes("Prive") &&
-        !t.expenseCategory?.includes("Kontingensi")
+        isOfficeOpexCategory(t.expenseCategory)
     )
     .reduce((sum, t) => sum + t.amount, 0);
 
@@ -62,7 +67,7 @@ export function BudgetControl() {
     .filter(
       (t) =>
         isRealExpense(t) &&
-        t.expenseCategory?.startsWith("Opex Tetap")
+        isFixedOpexCategory(t.expenseCategory)
     )
     .reduce((sum, t) => sum + t.amount, 0);
 
@@ -70,10 +75,7 @@ export function BudgetControl() {
     .filter(
       (t) =>
         isRealExpense(t) &&
-        !(
-          t.expenseCategory?.includes("Tax Reserve") ||
-          t.expenseCategory?.includes("Markup")
-        )
+        !isReserveCategory(t.expenseCategory)
     )
     .reduce((sum, t) => sum + t.amount, 0);
 

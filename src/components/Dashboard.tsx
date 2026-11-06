@@ -7,6 +7,7 @@ import { CashFlowChart } from "./CashFlowChart";
 import { ProjectList, TransactionHistory } from "./Lists";
 import { DailyExpenseReport } from "./DailyExpenseReport";
 import { ProjectReport } from "./ProjectReport";
+import { ContingencyPanel } from "./ContingencyPanel";
 import { ProjectSupportManager } from "./ProjectSupportManager";
 import { StrategyPanel } from "./StrategyPanel";
 import { ArahanPanel } from "./ArahanPanel";
@@ -535,6 +536,7 @@ export function Dashboard() {
         <div className="space-y-8 mb-8">
           <ProjectList onPayment={(id) => openModal("NEW_PAYMENT", id)} />
           <ProjectReport />
+          <ContingencyPanel />
         </div>
       )}
 
