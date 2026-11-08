@@ -71,7 +71,7 @@ export function ProjectReport() {
             <Row label="Proyek dalam pengerjaan" value={bs.wip} hint="Biaya yang sudah keluar untuk proyek berjalan" />
             <Row label="Total aset lancar" value={bs.cash + bs.receivables + bs.wip} bold />
             <Row label="Uang muka pelanggan (kewajiban)" value={bs.customerAdvances} hint="Uang klien untuk proyek yang belum diserahkan" />
-            <Row label="Aset bersih" value={bs.cash + bs.receivables + bs.wip - bs.customerAdvances} bold />
+            <Row label="Aset bersih (belum termasuk aset tetap & kewajiban lain)" value={bs.cash + bs.receivables + bs.wip - bs.customerAdvances} bold hint="Neraca lengkap ada di tab Kewajiban, Aset & Neraca" />
           </div>
         </div>
       </div>

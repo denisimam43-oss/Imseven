@@ -18,3 +18,13 @@ dan sesuaikan lewat ikon pensil di kartu rekening.
 
 ## Belum termasuk
 - Penyimpanan online (Firebase/Google Sheets) agar data tersinkron antar perangkat.
+
+## Tambahan: Kewajiban, Aset Tetap & Neraca lengkap
+Tab baru **Kewajiban, Aset & Neraca** di Dashboard.
+1. **Daftar kewajiban**: supplier, refund klien, kredit/cicilan, dana investor, kontrak legal. Ada sisa, pembayaran per bulan, dan penanda apakah cicilan sudah termasuk "biaya tetap".
+2. **Aset tetap & penyusutan** garis lurus (kendaraan, mesin, peralatan). Umur ekonomis hanya usulan akuntansi, bukan ketentuan pajak. Harga boleh perkiraan.
+3. **Neraca lengkap**: Aset (kas, piutang, WIP, aset tetap) = Kewajiban (uang muka pelanggan + kewajiban terdaftar) + Ekuitas. Muncul peringatan bila data belum lengkap.
+4. **Ketahanan kas**: kas bebas (Rek 1+3+4) dibagi kebutuhan bulanan = berapa bulan bertahan, dengan target dana darurat yang bisa diubah (default 1 bulan). Status KRITIS / TIPIS / AMAN.
+5. Backup/pulihkan JSON ikut menyimpan data baru; backup lama tetap bisa dipulihkan.
+
+Catatan: tombol "Kurangi sisa" hanya mengurangi sisa kewajiban. Uang keluarnya tetap dicatat di Pengeluaran agar saldo rekening dan laba rugi tidak berubah diam-diam. Belum ada rekening cadangan khusus (Rek 5) dan ekspor CSV belum memuat data baru.
