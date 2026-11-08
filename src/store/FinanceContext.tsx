@@ -17,6 +17,8 @@ import {
   DEFAULT_SETTINGS,
   ProjectCategory,
   PaymentScheme,
+  Liability,
+  FixedAsset,
 } from "../types";
 import { buildPlan } from "../plan";
 import { PeriodInfo, inPeriod, periodCapacity, periodInfo, periodOfTs, shiftPeriod } from "../calendar";
@@ -45,6 +47,8 @@ const KEY_SUPPORTS = "seven_interior_supports_v1";
 const KEY_RECONCILE = "seven_interior_needs_reconcile";
 const KEY_BACKUP_V1 = "seven_interior_backup_pre_v2";
 const KEY_SETTINGS = "seven_interior_settings_v1";
+const KEY_LIABILITIES = "seven_interior_liabilities_v1";
+const KEY_ASSETS = "seven_interior_fixed_assets_v1";
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -88,6 +92,8 @@ export interface BackupData {
   transactions: Transaction[];
   supports: ProjectSupport[];
   settings?: FinanceSettings;
+  liabilities?: Liability[];
+  fixedAssets?: FixedAsset[];
 }
 
 interface FinanceState {
@@ -96,6 +102,8 @@ interface FinanceState {
   transactions: Transaction[];
   filteredTransactions: Transaction[];
   supports: ProjectSupport[];
+  liabilities: Liability[];
+  fixedAssets: FixedAsset[];
   filterPeriod: FilterPeriod;
   setFilterPeriod: (period: FilterPeriod) => void;
   isInPeriod: (ts: number) => boolean;
@@ -162,6 +170,14 @@ interface FinanceState {
   ) => void;
   settleSupport: (supportId: string, date?: number) => void;
   deleteSupport: (supportId: string) => void;
+  // Kewajiban (supplier, refund, kredit, investor, legal) & aset tetap
+  addLiability: (data: Omit<Liability, "id" | "createdAt">) => void;
+  updateLiability: (id: string, data: Partial<Omit<Liability, "id" | "createdAt">>) => void;
+  payLiability: (id: string, amount: number) => void; // mengurangi sisa kewajiban saja (kas dicatat lewat Pengeluaran)
+  deleteLiability: (id: string) => void;
+  addFixedAsset: (data: Omit<FixedAsset, "id">) => void;
+  updateFixedAsset: (id: string, data: Partial<Omit<FixedAsset, "id">>) => void;
+  deleteFixedAsset: (id: string) => void;
   balances: {
     rek1: number;
     rek2: number;
@@ -215,6 +231,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   });
 
   const [supports, setSupports] = useState<ProjectSupport[]>(() => readJson(KEY_SUPPORTS, []));
+  const [liabilities, setLiabilities] = useState<Liability[]>(() => readJson(KEY_LIABILITIES, []));
+  const [fixedAssets, setFixedAssets] = useState<FixedAsset[]>(() => readJson(KEY_ASSETS, []));
 
   const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>("THIS_CUTOFF");
   const [settings, setSettings] = useState<FinanceSettings>(() => {
@@ -250,6 +268,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings));
   }, [settings]);
+  useEffect(() => {
+    localStorage.setItem(KEY_LIABILITIES, JSON.stringify(liabilities));
+  }, [liabilities]);
+  useEffect(() => {
+    localStorage.setItem(KEY_ASSETS, JSON.stringify(fixedAssets));
+  }, [fixedAssets]);
 
   const dismissReconcile = () => {
     localStorage.removeItem(KEY_RECONCILE);
@@ -626,6 +650,45 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setTransactions((prev) => prev.filter((t) => t.supportId !== supportId));
   };
 
+  // ---------- Kewajiban & aset tetap ----------
+
+  const addLiability: FinanceState["addLiability"] = (data) => {
+    setLiabilities((prev) => [{ ...data, id: generateId(), createdAt: Date.now() }, ...prev]);
+  };
+
+  const updateLiability: FinanceState["updateLiability"] = (id, data) => {
+    setLiabilities((prev) => prev.map((l) => (l.id === id ? { ...l, ...data } : l)));
+  };
+
+  // Hanya mengurangi sisa kewajiban. Uang keluar tetap dicatat lewat Pengeluaran
+  // agar saldo rekening dan laporan laba rugi tidak berubah diam-diam.
+  const payLiability: FinanceState["payLiability"] = (id, amount) => {
+    if (!(amount > 0)) return;
+    setLiabilities((prev) =>
+      prev.map((l) => {
+        if (l.id !== id) return l;
+        const outstanding = Math.max(0, l.outstanding - amount);
+        return { ...l, outstanding, settled: outstanding === 0 ? true : l.settled };
+      }),
+    );
+  };
+
+  const deleteLiability: FinanceState["deleteLiability"] = (id) => {
+    setLiabilities((prev) => prev.filter((l) => l.id !== id));
+  };
+
+  const addFixedAsset: FinanceState["addFixedAsset"] = (data) => {
+    setFixedAssets((prev) => [{ ...data, id: generateId() }, ...prev]);
+  };
+
+  const updateFixedAsset: FinanceState["updateFixedAsset"] = (id, data) => {
+    setFixedAssets((prev) => prev.map((a) => (a.id === id ? { ...a, ...data } : a)));
+  };
+
+  const deleteFixedAsset: FinanceState["deleteFixedAsset"] = (id) => {
+    setFixedAssets((prev) => prev.filter((a) => a.id !== id));
+  };
+
   // ---------- Rekonsiliasi saldo ----------
 
   const adjustBalance: FinanceState["adjustBalance"] = (account, newBalance) => {
@@ -719,6 +782,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     transactions,
     supports,
     settings,
+    liabilities,
+    fixedAssets,
   });
 
   const importData: FinanceState["importData"] = (data) => {
@@ -730,6 +795,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setProjects(d.projects);
     setTransactions(tx);
     setSupports(Array.isArray(d.supports) ? d.supports : []);
+    setLiabilities(Array.isArray(d.liabilities) ? d.liabilities : []);
+    setFixedAssets(Array.isArray(d.fixedAssets) ? d.fixedAssets : []);
     if (d.settings) updateSettings(d.settings);
     return {
       ok: true,
@@ -821,6 +888,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         transactions: sortedTransactions,
         filteredTransactions,
         supports,
+        liabilities,
+        fixedAssets,
         filterPeriod,
         setFilterPeriod,
         isInPeriod,
@@ -849,6 +918,13 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         addSupport,
         settleSupport,
         deleteSupport,
+        addLiability,
+        updateLiability,
+        payLiability,
+        deleteLiability,
+        addFixedAsset,
+        updateFixedAsset,
+        deleteFixedAsset,
         balances,
         filteredBalances,
         deleteTransaction,

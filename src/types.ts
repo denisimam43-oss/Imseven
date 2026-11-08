@@ -141,6 +141,69 @@ export interface ProjectSupport {
   toAccount?: RekeningType; // rekening penerima (default sama dengan sumber)
 }
 
+// ---------- Kewajiban & Aset Tetap ----------
+
+export type LiabilityKind = "SUPPLIER" | "REFUND" | "KREDIT" | "INVESTOR" | "LEGAL" | "LAINNYA";
+
+export const LIABILITY_KIND_LABEL: Record<LiabilityKind, string> = {
+  SUPPLIER: "Utang supplier / vendor",
+  REFUND: "Refund klien",
+  KREDIT: "Kredit / cicilan",
+  INVESTOR: "Dana investor",
+  LEGAL: "Kontrak legal",
+  LAINNYA: "Lainnya",
+};
+
+/**
+ * Kewajiban di luar uang muka pelanggan dan talangan antar proyek
+ * (keduanya sudah dihitung otomatis dari transaksi proyek).
+ */
+export interface Liability {
+  id: string;
+  name: string;
+  kind: LiabilityKind;
+  outstanding: number; // sisa yang masih harus dibayar (sisa pokok)
+  monthlyPayment: number; // cicilan / imbal hasil per bulan (0 bila tidak rutin)
+  dueDay?: number; // tanggal jatuh tempo tiap bulan (1-31)
+  inFixedExpense?: boolean; // pembayaran bulanannya sudah termasuk di "biaya tetap" pada pengaturan
+  notes?: string;
+  createdAt: number;
+  settled?: boolean;
+}
+
+export type AssetCategory = "KENDARAAN" | "MESIN" | "PERALATAN" | "KOMPUTER" | "FURNITUR" | "LAINNYA";
+
+export const ASSET_CATEGORY_LABEL: Record<AssetCategory, string> = {
+  KENDARAAN: "Kendaraan",
+  MESIN: "Mesin produksi",
+  PERALATAN: "Peralatan kerja",
+  KOMPUTER: "Komputer & elektronik",
+  FURNITUR: "Furnitur kantor / workshop",
+  LAINNYA: "Lainnya",
+};
+
+/** Umur ekonomis usulan (bulan). Ini usulan akuntansi, bukan ketentuan pajak: sesuaikan dengan konsultan pajak. */
+export const ASSET_DEFAULT_LIFE_MONTHS: Record<AssetCategory, number> = {
+  KENDARAAN: 96,
+  MESIN: 96,
+  PERALATAN: 48,
+  KOMPUTER: 48,
+  FURNITUR: 48,
+  LAINNYA: 48,
+};
+
+export interface FixedAsset {
+  id: string;
+  name: string;
+  category: AssetCategory;
+  purchaseDate: number;
+  cost: number; // harga beli (boleh perkiraan, lihat estimated)
+  usefulLifeMonths: number; // 0 = tidak disusutkan
+  salvageValue: number; // nilai sisa di akhir umur ekonomis
+  estimated?: boolean; // harga masih perkiraan
+  notes?: string;
+}
+
 export type FilterPeriod = "THIS_CUTOFF" | "LAST_CUTOFF" | "7_DAYS" | "THIS_MONTH" | "6_MONTHS" | "THIS_YEAR";
 
 // ---------- Pengaturan keuangan (bisa diubah di aplikasi) ----------
@@ -166,6 +229,7 @@ export interface FinanceSettings {
   slotsPerPeriod: number; // kapasitas produksi penuh per periode
   baseWorkdays: number; // hari kerja periode penuh
   closedThrough?: string; // periode terakhir yang sudah tutup buku, mis. "2026-11"
+  emergencyMonths: number; // target dana darurat operasional, dalam bulan kebutuhan tetap
 }
 
 export const DEFAULT_SETTINGS: FinanceSettings = {
@@ -177,6 +241,7 @@ export const DEFAULT_SETTINGS: FinanceSettings = {
   slotValue: 30000000,
   slotsPerPeriod: 12,
   baseWorkdays: 26,
+  emergencyMonths: 1,
 };
 
 /** Durasi standar (hari kerja) setelah DP / kick off. */
