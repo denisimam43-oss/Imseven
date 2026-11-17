@@ -28,7 +28,6 @@
   ],
   "exclude": [
     "node_modules",
-    "dist",
-    "update-strategi-utang-v2"
+    "dist"
   ]
 }

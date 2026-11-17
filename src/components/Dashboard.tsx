@@ -31,6 +31,7 @@ import {
   ShieldAlert,
   LifeBuoy,
   BookLock,
+  Trash2,
 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
 import { FilterPeriod } from "../types";
@@ -54,6 +55,9 @@ export function Dashboard() {
     setCsvModalType(type);
     setCsvModalOpen(true);
   };
+
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const [clearConfirmText, setClearConfirmText] = useState("");
 
   const {
     filterPeriod,
@@ -484,6 +488,77 @@ export function Dashboard() {
           <TransactionHistory />
         </div>
       )}
+
+      {/* Danger Zone: Hapus Semua Data */}
+      <div className="mt-10 p-5 bg-rose-50 border border-rose-200 rounded-2xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2 bg-rose-600 text-white rounded-xl shrink-0">
+              <Trash2 size={18} />
+            </div>
+            <div>
+              <h4 className="text-sm font-extrabold text-rose-900">Hapus semua data</h4>
+              <p className="text-xs text-rose-800 mt-0.5 font-medium">
+                Semua data di perangkat ini akan hilang. Tekan Backup dulu.
+              </p>
+            </div>
+          </div>
+          {!confirmClearOpen && (
+            <button
+              type="button"
+              onClick={() => {
+                setClearConfirmText("");
+                setConfirmClearOpen(true);
+              }}
+              className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors shadow-sm self-start sm:self-auto shrink-0"
+            >
+              Hapus semua data
+            </button>
+          )}
+        </div>
+
+        {confirmClearOpen && (
+          <div className="mt-4 pt-4 border-t border-rose-200 flex flex-col sm:flex-row sm:items-end gap-3">
+            <div className="flex-1">
+              <label className="block text-[11px] font-bold text-rose-900 uppercase tracking-wider mb-1">
+                Ketik HAPUS untuk mengonfirmasi
+              </label>
+              <input
+                type="text"
+                value={clearConfirmText}
+                onChange={(e) => setClearConfirmText(e.target.value)}
+                placeholder="Ketik HAPUS"
+                className="w-full px-3.5 py-2 bg-white border border-rose-300 rounded-xl text-xs font-mono font-bold text-rose-900 focus:outline-none focus:ring-2 focus:ring-rose-500"
+              />
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmClearOpen(false);
+                  setClearConfirmText("");
+                }}
+                className="px-4 py-2 bg-white border border-rose-200 text-slate-600 hover:bg-slate-50 text-xs font-bold uppercase tracking-wider rounded-xl transition-colors"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={clearConfirmText !== "HAPUS"}
+                onClick={() => {
+                  if (clearConfirmText !== "HAPUS") return;
+                  localStorage.clear();
+                  sessionStorage.clear();
+                  window.location.reload();
+                }}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold uppercase tracking-wider rounded-xl transition-colors shadow-sm"
+              >
+                Konfirmasi Hapus
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Modals Provider */}
       <Modals activeModal={modal} close={() => setModal(null)} initialProjectId={modalProjectId} />

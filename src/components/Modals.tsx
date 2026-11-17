@@ -132,8 +132,10 @@ function ModalBody({
   const [toProjectId, setToProjectId] = useState(initialProjectId || "");
 
   // Password
+  const [oldPassword, setOldPassword] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
 
   const contractValue = parseNum(value);
   const payNum = parseNum(payAmount);
@@ -210,8 +212,20 @@ function ModalBody({
     }
 
     if (activeModal === "CHANGE_PASSWORD") {
-      if (password.length < 6) return alert("Kata sandi minimal 6 karakter.");
-      if (password !== confirmPassword) return alert("Konfirmasi sandi baru tidak cocok.");
+      setPasswordError("");
+      const currentPassword = localStorage.getItem("adminPassword") || "admin123";
+      if (!oldPassword || oldPassword !== currentPassword) {
+        return setPasswordError("Sandi lama tidak sesuai.");
+      }
+      if (password.length < 8) {
+        return setPasswordError("Sandi baru minimal 8 karakter.");
+      }
+      if (password === "admin123") {
+        return setPasswordError('Sandi baru tidak boleh "admin123".');
+      }
+      if (password !== confirmPassword) {
+        return setPasswordError("Konfirmasi sandi baru tidak cocok.");
+      }
       localStorage.setItem("adminPassword", password);
       alert("Kata sandi berhasil diubah.");
       return close();
@@ -346,11 +360,49 @@ function ModalBody({
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           {activeModal === "CHANGE_PASSWORD" && (
             <>
-              <Field label="Sandi Baru">
-                <input required type="password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputCls} placeholder="Minimal 6 karakter" />
+              {passwordError && (
+                <div className="p-3 bg-rose-50 text-rose-700 text-xs font-bold rounded-xl border border-rose-200">
+                  {passwordError}
+                </div>
+              )}
+              <Field label="Sandi Lama">
+                <input
+                  required
+                  type="password"
+                  value={oldPassword}
+                  onChange={(e) => {
+                    setOldPassword(e.target.value);
+                    if (passwordError) setPasswordError("");
+                  }}
+                  className={inputCls}
+                  placeholder="Masukkan sandi saat ini"
+                />
+              </Field>
+              <Field label="Sandi Baru" hint="Minimal 8 karakter dan tidak boleh menggunakan sandi default.">
+                <input
+                  required
+                  type="password"
+                  value={password}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    if (passwordError) setPasswordError("");
+                  }}
+                  className={inputCls}
+                  placeholder="Minimal 8 karakter"
+                />
               </Field>
               <Field label="Konfirmasi Sandi Baru">
-                <input required type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} className={inputCls} placeholder="Ulangi kata sandi baru" />
+                <input
+                  required
+                  type="password"
+                  value={confirmPassword}
+                  onChange={(e) => {
+                    setConfirmPassword(e.target.value);
+                    if (passwordError) setPasswordError("");
+                  }}
+                  className={inputCls}
+                  placeholder="Ulangi sandi baru"
+                />
               </Field>
             </>
           )}
