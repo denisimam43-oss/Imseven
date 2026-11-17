@@ -32,3 +32,11 @@ dan sesuaikan lewat ikon pensil di kartu rekening.
    - Panel baru "Dana Tak Terduga per Proyek" di tab Pipeline: jatah, terpakai, sisa, plafon, status per proyek, rekap per sebab periode berjalan, dan kontingensi lama yang belum ditautkan.
    - Logika murni di `src/contingency.ts`; sebab dan penanda plafon ikut tercatat di Jejak Perubahan.
    - Belum diputuskan: sisa jatah dilepas ke profit saat serah terima atau ditahan sampai garansi selesai; evaluasi ulang 2% setelah 3 periode.
+
+## Kewajiban, Aset Tetap & Neraca Lengkap (di atas cabang Firebase)
+
+- Tab baru "Kewajiban, Aset & Neraca": kewajiban (supplier, refund, kredit, investor, legal), aset tetap dengan penyusutan garis lurus, neraca lengkap, dan ketahanan kas (runway).
+- Data tersinkron ke Firestore (koleksi `liabilities` dan `fixedAssets`), tercatat di log audit, ikut backup.
+- Hak akses: Owner dan Finance boleh mencatat/mengubah; hanya Owner boleh menghapus; Akuntan hanya melihat.
+- Hapus proyek kini hanya Owner; Finance memakai Arsipkan.
+- **Wajib**: tempel `firestore.rules` terbaru di Firebase Console sebelum dipakai, kalau tidak koleksi baru ditolak server.

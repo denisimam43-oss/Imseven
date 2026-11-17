@@ -22,6 +22,8 @@ import {
   ProjectCategory,
   PaymentScheme,
   AuditAction,
+  Liability,
+  FixedAsset,
 } from "../types";
 import { buildPlan } from "../plan";
 import { LoadingScreen } from "../components/LoginScreen";
@@ -65,6 +67,8 @@ const KEY_RECONCILE = "seven_interior_needs_reconcile";
 const KEY_BACKUP_V1 = "seven_interior_backup_pre_v2";
 const KEY_SETTINGS = "seven_interior_settings_v1";
 const KEY_AUDIT = "seven_interior_audit_v1";
+const KEY_LIABILITIES = "seven_interior_liabilities_v1";
+const KEY_ASSETS = "seven_interior_fixed_assets_v1";
 
 function mergeSettings(saved: Partial<FinanceSettings> | undefined): FinanceSettings {
   const sv = saved || {};
@@ -119,6 +123,8 @@ export interface BackupData {
   supports: ProjectSupport[];
   settings?: FinanceSettings;
   audit?: AuditEntry[]; // log aktivitas; digabung (bukan ditimpa) saat pemulihan
+  liabilities?: Liability[];
+  fixedAssets?: FixedAsset[];
 }
 
 interface FinanceState {
@@ -208,6 +214,16 @@ interface FinanceState {
   ) => void;
   settleSupport: (supportId: string, date?: number) => void;
   deleteSupport: (supportId: string) => void;
+  // Kewajiban (supplier, refund, kredit, investor, legal) & aset tetap
+  liabilities: Liability[];
+  fixedAssets: FixedAsset[];
+  addLiability: (data: Omit<Liability, "id" | "createdAt">) => void;
+  updateLiability: (id: string, data: Partial<Omit<Liability, "id" | "createdAt">>) => void;
+  payLiability: (id: string, amount: number) => void; // mengurangi sisa saja; kas dicatat lewat Pengeluaran
+  deleteLiability: (id: string) => void;
+  addFixedAsset: (data: Omit<FixedAsset, "id">) => void;
+  updateFixedAsset: (id: string, data: Partial<Omit<FixedAsset, "id">>) => void;
+  deleteFixedAsset: (id: string) => void;
   balances: {
     rek1: number;
     rek2: number;
@@ -303,6 +319,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     firebaseEnabled ? [] : readJson(KEY_SUPPORTS, []),
   );
   const [audit, setAudit] = useState<AuditEntry[]>(() => (firebaseEnabled ? [] : readJson(KEY_AUDIT, [])));
+  const [liabilities, setLiabilities] = useState<Liability[]>(() =>
+    firebaseEnabled ? [] : readJson(KEY_LIABILITIES, []),
+  );
+  const [fixedAssets, setFixedAssets] = useState<FixedAsset[]>(() =>
+    firebaseEnabled ? [] : readJson(KEY_ASSETS, []),
+  );
 
   const [filterPeriod, setFilterPeriod] = useState<FilterPeriod>("THIS_CUTOFF");
   const [settings, setSettings] = useState<FinanceSettings>(() =>
@@ -342,6 +364,22 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     sort: (a, b) => b.at - a.at,
     recent: { field: "at", max: 1000 },
   });
+  const liabSync = useCollectionSync<Liability>({
+    name: "liabilities",
+    items: liabilities,
+    setItems: setLiabilities,
+    enabled: firebaseEnabled,
+    canWrite: roleCan(actor.role, "manageLedger"),
+    sort: (a, b) => b.createdAt - a.createdAt,
+  });
+  const assetSync = useCollectionSync<FixedAsset>({
+    name: "fixedAssets",
+    items: fixedAssets,
+    setItems: setFixedAssets,
+    enabled: firebaseEnabled,
+    canWrite: roleCan(actor.role, "manageLedger"),
+    sort: (a, b) => b.purchaseDate - a.purchaseDate,
+  });
   const settingsSync = useDocSync<FinanceSettings>({
     path: ["config", "settings"],
     value: settings,
@@ -351,8 +389,21 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   });
   const syncReady =
     !firebaseEnabled ||
-    (projSync.hydrated && txSync.hydrated && supSync.hydrated && auditSync.hydrated && settingsSync.hydrated);
-  const syncError = projSync.error || txSync.error || supSync.error || auditSync.error || settingsSync.error;
+    (projSync.hydrated &&
+      txSync.hydrated &&
+      supSync.hydrated &&
+      auditSync.hydrated &&
+      settingsSync.hydrated &&
+      liabSync.hydrated &&
+      assetSync.hydrated);
+  const syncError =
+    projSync.error ||
+    txSync.error ||
+    supSync.error ||
+    auditSync.error ||
+    settingsSync.error ||
+    liabSync.error ||
+    assetSync.error;
 
   // ---------- Jejak audit ----------
   const denied = (action: Action) => {
@@ -426,6 +477,12 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!firebaseEnabled) localStorage.setItem(KEY_SETTINGS, JSON.stringify(settings));
   }, [settings]);
+  useEffect(() => {
+    if (!firebaseEnabled) localStorage.setItem(KEY_LIABILITIES, JSON.stringify(liabilities));
+  }, [liabilities]);
+  useEffect(() => {
+    if (!firebaseEnabled) localStorage.setItem(KEY_ASSETS, JSON.stringify(fixedAssets));
+  }, [fixedAssets]);
   useEffect(() => {
     if (firebaseEnabled) return;
     try {
@@ -1053,6 +1110,92 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setSettings((s) => ({ ...s, closedThrough: s.closedThrough === p.key ? prev.key : s.closedThrough }));
   };
 
+  // ---------- Kewajiban & aset tetap ----------
+
+  const addLiability: FinanceState["addLiability"] = (data) => {
+    if (!can("manageLedger")) return denied("manageLedger");
+    const item: Liability = { ...data, id: generateId(), createdAt: Date.now() };
+    setLiabilities((prev) => [item, ...prev]);
+    logAudit("LIABILITY", `Kewajiban baru: ${item.name} (${formatRupiah(item.outstanding)})`, {
+      target: item.id,
+      after: { jenis: item.kind, sisa: item.outstanding, bulanan: item.monthlyPayment },
+    });
+  };
+
+  const updateLiability: FinanceState["updateLiability"] = (id, data) => {
+    if (!can("manageLedger")) return denied("manageLedger");
+    const old = liabilities.find((l) => l.id === id);
+    if (!old) return;
+    setLiabilities((prev) => prev.map((l) => (l.id === id ? { ...l, ...data } : l)));
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+    for (const k of Object.keys(data) as (keyof Liability)[]) {
+      if (JSON.stringify(old[k]) !== JSON.stringify(data[k])) {
+        before[k] = old[k];
+        after[k] = data[k];
+      }
+    }
+    if (Object.keys(after).length > 0) {
+      logAudit("LIABILITY", `Kewajiban diubah: ${old.name}`, { target: id, before, after });
+    }
+  };
+
+  // Hanya mengurangi sisa kewajiban. Uang keluar dicatat terpisah lewat Pengeluaran,
+  // agar saldo rekening dan laba rugi tidak berubah diam-diam.
+  const payLiability: FinanceState["payLiability"] = (id, amount) => {
+    if (!can("manageLedger")) return denied("manageLedger");
+    if (!(amount > 0)) return;
+    const old = liabilities.find((l) => l.id === id);
+    if (!old) return;
+    const outstanding = Math.max(0, old.outstanding - amount);
+    setLiabilities((prev) =>
+      prev.map((l) => (l.id === id ? { ...l, outstanding, settled: outstanding === 0 ? true : l.settled } : l)),
+    );
+    logAudit("LIABILITY", `Sisa ${old.name} dikurangi ${formatRupiah(amount)}`, {
+      target: id,
+      before: { sisa: old.outstanding },
+      after: { sisa: outstanding },
+    });
+  };
+
+  const deleteLiability: FinanceState["deleteLiability"] = (id) => {
+    if (!can("deleteLedger")) return denied("deleteLedger");
+    const old = liabilities.find((l) => l.id === id);
+    setLiabilities((prev) => prev.filter((l) => l.id !== id));
+    logAudit("LIABILITY", `Kewajiban dihapus: ${old?.name ?? id}`, {
+      target: id,
+      before: old ? { sisa: old.outstanding, jenis: old.kind } : undefined,
+    });
+  };
+
+  const addFixedAsset: FinanceState["addFixedAsset"] = (data) => {
+    if (!can("manageLedger")) return denied("manageLedger");
+    const item: FixedAsset = { ...data, id: generateId() };
+    setFixedAssets((prev) => [item, ...prev]);
+    logAudit("ASSET", `Aset tetap baru: ${item.name} (${formatRupiah(item.cost)})`, {
+      target: item.id,
+      after: { kategori: item.category, harga: item.cost, umurBulan: item.usefulLifeMonths },
+    });
+  };
+
+  const updateFixedAsset: FinanceState["updateFixedAsset"] = (id, data) => {
+    if (!can("manageLedger")) return denied("manageLedger");
+    const old = fixedAssets.find((a) => a.id === id);
+    if (!old) return;
+    setFixedAssets((prev) => prev.map((a) => (a.id === id ? { ...a, ...data } : a)));
+    logAudit("ASSET", `Aset tetap diubah: ${old.name}`, { target: id, before: { ...old }, after: { ...data } });
+  };
+
+  const deleteFixedAsset: FinanceState["deleteFixedAsset"] = (id) => {
+    if (!can("deleteLedger")) return denied("deleteLedger");
+    const old = fixedAssets.find((a) => a.id === id);
+    setFixedAssets((prev) => prev.filter((a) => a.id !== id));
+    logAudit("ASSET", `Aset tetap dihapus: ${old?.name ?? id}`, {
+      target: id,
+      before: old ? { harga: old.cost, kategori: old.category } : undefined,
+    });
+  };
+
   // ---------- Backup ----------
 
   const exportData = (): BackupData => ({
@@ -1064,6 +1207,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     supports,
     settings,
     audit,
+    liabilities,
+    fixedAssets,
   });
 
   const importData: FinanceState["importData"] = (data) => {
@@ -1076,6 +1221,8 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setProjects(d.projects);
     setRawTx(tx);
     setSupports(Array.isArray(d.supports) ? d.supports : []);
+    setLiabilities(Array.isArray(d.liabilities) ? d.liabilities : []);
+    setFixedAssets(Array.isArray(d.fixedAssets) ? d.fixedAssets : []);
     logAudit("IMPORT", `Backup dipulihkan: ${d.projects.length} proyek, ${tx.length} transaksi`, {
       after: { proyek: d.projects.length, transaksi: tx.length },
     });
@@ -1275,6 +1422,15 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
         addSupport,
         settleSupport,
         deleteSupport,
+        liabilities,
+        fixedAssets,
+        addLiability,
+        updateLiability,
+        payLiability,
+        deleteLiability,
+        addFixedAsset,
+        updateFixedAsset,
+        deleteFixedAsset,
         balances,
         filteredBalances,
         updateTransaction,
