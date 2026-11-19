@@ -61,11 +61,7 @@ export function LoginScreen() {
         </div>
         <div className="flex flex-col items-center mb-8">
           <div className="w-20 h-20 bg-gradient-to-bl from-navy-600 to-navy-400 rounded-2xl flex items-center justify-center mb-4 shadow-sm overflow-hidden border border-slate-100">
-            {logoBase64 ? (
-              <img src={logoBase64} alt="Company Logo" className="w-full h-full object-cover" />
-            ) : (
-              <Lock className="text-white w-8 h-8" />
-            )}
+            <img src={logoBase64 || "/logo-seven.png"} alt="Seven Finance" className="w-full h-full object-cover" />
           </div>
           <h2 className="text-2xl font-bold text-slate-800 tracking-tight">FINANCE CORE</h2>
           <p className="text-sm font-medium text-slate-500 mt-1">

@@ -145,19 +145,11 @@ export function Dashboard() {
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
         <div className="flex items-center gap-4">
           <div className="relative group shrink-0">
-            {logoUrl ? (
-              <img
-                src={logoUrl}
-                alt="Logo"
-                className="w-14 h-14 rounded-2xl object-contain bg-white border border-slate-200 shadow-sm"
-              />
-            ) : (
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-navy-700 to-navy-500 border border-slate-200 flex items-center justify-center shadow-sm">
-                <span className="text-white font-extrabold text-xl tracking-tighter">
-                  7
-                </span>
-              </div>
-            )}
+            <img
+              src={logoUrl || "/logo-seven.png"}
+              alt="Logo Seven Finance"
+              className="w-14 h-14 rounded-2xl object-cover bg-slate-900 border border-slate-200 shadow-sm"
+            />
             <label
               className="absolute inset-0 flex items-center justify-center bg-black/60 text-white opacity-0 group-hover:opacity-100 cursor-pointer rounded-2xl transition-opacity"
               title="Upload Logo Perusahaan"
