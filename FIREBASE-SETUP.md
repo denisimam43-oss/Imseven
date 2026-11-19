@@ -53,6 +53,9 @@ Setelah itu cocokkan saldo tiap rekening dengan saldo bank sebelum dipakai haria
 | Tutup/buka kembali buku periode | Ya | Tidak | Tidak |
 | Ubah target dan pengaturan kontrol | Ya | Tidak | Tidak |
 | Pulihkan backup | Ya | Tidak | Tidak |
+| Hapus proyek (Finance memakai Arsipkan) | Ya | Tidak | Tidak |
+| Catat / ubah kewajiban & aset tetap | Ya | Ya | Tidak (hanya lihat) |
+| Hapus kewajiban / aset tetap | Ya | Tidak | Tidak |
 
 ## Catatan
 - Aturan Firestore di atas menegakkan: log audit hanya bisa ditambah, transaksi dan talangan hanya bisa dihapus Owner (saat pulihkan backup; sehari-hari dibatalkan, bukan dihapus),

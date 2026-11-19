@@ -13,6 +13,7 @@ import { StrategyPanel } from "./StrategyPanel";
 import { ArahanPanel } from "./ArahanPanel";
 import { PeriodRecap } from "./PeriodRecap";
 import { AuditPanel } from "./AuditPanel";
+import { KewajibanAset } from "./KewajibanAset";
 import { useAuth } from "../auth/AuthContext";
 import { Modals, ModalType } from "./Modals";
 import { CsvExportModal, ReportExportType } from "./CsvExportModal";
@@ -36,6 +37,7 @@ import {
   BookLock,
   ClipboardCheck,
   User,
+  Scale,
 } from "lucide-react";
 import { useFinance } from "../store/FinanceContext";
 import { FilterPeriod, ROLE_LABEL } from "../types";
@@ -49,7 +51,7 @@ export function Dashboard() {
     setModal(m);
   };
   const [activeTab, setActiveTab] = useState<
-    "ALL" | "OVERVIEW" | "RECAP" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "EXPENSES" | "AUDIT"
+    "ALL" | "OVERVIEW" | "RECAP" | "STRATEGY" | "PROJECTS" | "SUPPORTS" | "LIABILITIES" | "EXPENSES" | "AUDIT"
   >("ALL");
 
   const [csvModalOpen, setCsvModalOpen] = useState(false);
@@ -480,6 +482,18 @@ export function Dashboard() {
           )}
         </button>
         <button
+          onClick={() => setActiveTab("LIABILITIES")}
+          className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap",
+            activeTab === "LIABILITIES"
+              ? "bg-slate-900 text-white shadow-sm"
+              : "text-slate-600 hover:bg-slate-100"
+          )}
+        >
+          <Scale size={14} />
+          Kewajiban, Aset & Neraca
+        </button>
+        <button
           onClick={() => setActiveTab("EXPENSES")}
           className={cn(
             "flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap",
@@ -544,6 +558,9 @@ export function Dashboard() {
       {(activeTab === "ALL" || activeTab === "SUPPORTS") && (
         <ProjectSupportManager onOpenAddModal={() => openModal("NEW_SUPPORT")} />
       )}
+
+      {/* TAB CONTENT: KEWAJIBAN, ASET & NERACA */}
+      {(activeTab === "ALL" || activeTab === "LIABILITIES") && <KewajibanAset />}
 
       {/* TAB CONTENT: EXPENSES & HISTORY */}
       {(activeTab === "ALL" || activeTab === "EXPENSES") && (

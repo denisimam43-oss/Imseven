@@ -1,7 +1,4 @@
 rules_version = '2';
-// Seven Finance — aturan keamanan Firestore.
-// Peran disimpan di dokumen users/{uid}: { role: "OWNER" | "FINANCE" | "AKUNTAN", name: "..." }
-// Dokumen users hanya boleh dibuat/diubah lewat Firebase Console (bukan dari aplikasi).
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -17,52 +14,58 @@ service cloud.firestore {
     function isOwner() { return hasRole() && role() == 'OWNER'; }
     function isOwnerOrFinance() { return hasRole() && role() in ['OWNER', 'FINANCE']; }
 
-    // Pengguna hanya boleh membaca perannya sendiri. Tidak ada yang bisa menulis dari aplikasi.
     match /users/{uid} {
       allow read: if signedIn() && request.auth.uid == uid;
       allow write: if false;
     }
 
-    // Pengaturan target/kontrol: semua peran membaca, hanya Owner menulis.
     match /config/{docId} {
       allow read: if hasRole();
       allow write: if isOwner();
     }
 
-    // Proyek: Owner dan Finance dapat membuat/mengubah/menghapus; Akuntan membuat dan mengubah,
-    // tetapi tidak menghapus.
+    // PERUBAHAN: AKUNTAN hanya baca; hapus proyek hanya OWNER
     match /projects/{id} {
       allow read: if hasRole();
-      allow create, update: if hasRole();
-      allow delete: if isOwnerOrFinance();
+      allow create, update: if isOwnerOrFinance();
+      allow delete: if isOwner();
     }
 
-    // Transaksi tidak pernah dihapus (dibatalkan lewat flag voided).
-    // Persetujuan (approval) hanya boleh diubah ke APPROVED/REJECTED oleh Owner.
+    // PERUBAHAN: AKUNTAN hanya baca; transaksi APPROVED terkunci (hanya OWNER yang boleh mengubah)
     match /transactions/{id} {
       allow read: if hasRole();
-      // Selain Owner tidak boleh membuat transaksi yang langsung berstatus "disetujui".
-      allow create: if hasRole()
+      allow create: if isOwnerOrFinance()
         && (isOwner() || request.resource.data.get('approval', null) != 'APPROVED');
-      allow update: if hasRole()
+      allow update: if isOwnerOrFinance()
         && (isOwner()
-            || request.resource.data.get('approval', null) == resource.data.get('approval', null)
-            || request.resource.data.get('approval', null) == 'PENDING');
-      // Hanya Owner (saat memulihkan backup) yang boleh menghapus dokumen transaksi.
+            || (resource.data.get('approval', null) != 'APPROVED'
+                && request.resource.data.get('approval', null) != 'APPROVED'));
       allow delete: if isOwner();
     }
 
+    // PERUBAHAN: AKUNTAN hanya baca
     match /supports/{id} {
       allow read: if hasRole();
-      allow create, update: if hasRole();
+      allow create, update: if isOwnerOrFinance();
       allow delete: if isOwner();
     }
 
-    // Log audit hanya bisa ditambah. Tidak bisa diubah atau dihapus oleh siapa pun.
     match /auditLog/{id} {
       allow read: if hasRole();
       allow create: if hasRole();
       allow update, delete: if false;
+    }
+
+    // BARU: fitur kewajiban & aset tetap
+    match /liabilities/{id} {
+      allow read: if hasRole();
+      allow create, update: if isOwnerOrFinance();
+      allow delete: if isOwner();
+    }
+    match /fixedAssets/{id} {
+      allow read: if hasRole();
+      allow create, update: if isOwnerOrFinance();
+      allow delete: if isOwner();
     }
   }
 }

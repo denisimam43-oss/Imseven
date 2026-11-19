@@ -25,6 +25,8 @@ export const AUDIT_LABEL: Record<AuditAction, string> = {
   TX_APPROVE: "Setujui pengeluaran",
   TX_REJECT: "Tolak pengeluaran",
   LEGACY_UPLOAD: "Unggah data lama",
+  LIABILITY: "Kewajiban",
+  ASSET: "Aset tetap",
 };
 
 /**
